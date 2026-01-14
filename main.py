@@ -1,6 +1,7 @@
 from enum import Enum
 from ppi_client.ppi import PPI
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from os import getenv
 from dataclasses import dataclass
@@ -14,6 +15,9 @@ from typing import Dict, Optional
 import sqlite3
 
 load_dotenv()
+
+# Timezone de Argentina
+ARGENTINA_TZ = ZoneInfo("America/Buenos_Aires")
 
 # Configurar logging
 logging.basicConfig(
@@ -292,7 +296,7 @@ class CaucionBot:
             tasa72h = self.ppi.marketdata.current("PESOS3", "CAUCIONES", "INMEDIATA")
             rates['72h'] = float(tasa72h.get('price', 0))
 
-            rates['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            rates['timestamp'] = datetime.now(ARGENTINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
             return rates
         except Exception as e:
@@ -764,8 +768,59 @@ _Usa /export para descargar backup de la DB_
             # Guardar estado para esperar el porcentaje
             context.user_data['waiting_custom_threshold'] = True
 
+    async def _send_welcome_message(self, update: Update):
+        """Enviar mensaje de bienvenida (reutilizable)"""
+        chat_id = update.effective_chat.id
+        is_new_user = chat_id not in self.subscriptions
+
+        if is_new_user:
+            welcome_message = (
+                "👋 *¡Hola! Soy el Bot de Tasas de Cauciones*\n\n"
+                "Te ayudo a monitorear las tasas de cauciones en tiempo real.\n\n"
+                "🎯 *¿Qué puedo hacer por ti?*\n\n"
+                "📊 *Ver tasas actuales*\n"
+                "Usa /tasas para consultar las tasas de 24h, 48h y 72h\n\n"
+                "🔔 *Recibir alertas automáticas*\n"
+                "Te notifico cuando las tasas cambien. Puedes elegir:\n"
+                "  • Cualquier variación\n"
+                "  • Solo cambios importantes (>1%, >2%, etc.)\n\n"
+                "¿Quieres empezar? Elige una opción:"
+            )
+
+            keyboard = [
+                [InlineKeyboardButton("📊 Ver tasas actuales", callback_data="quick_tasas")],
+                [InlineKeyboardButton("🔔 Configurar alertas", callback_data="quick_config")],
+                [InlineKeyboardButton("ℹ️ Ver todos los comandos", callback_data="quick_help")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(
+                welcome_message,
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            sub = self.subscriptions[chat_id]
+            if sub.subscription_type == SubscriptionType.ANY_CHANGE:
+                config_info = "🔔 Notificaciones: Cualquier cambio"
+            elif sub.subscription_type == SubscriptionType.PERCENTAGE:
+                config_info = f"📊 Notificaciones: Cambios > {sub.threshold_percentage}%"
+            else:
+                config_info = "⏸️ Sin notificaciones activas"
+
+            welcome_back = (
+                f"👋 *¡Hola!*\n\n"
+                f"{config_info}\n\n"
+                f"*Acciones rápidas:*\n"
+                f"• /tasas - Ver tasas actuales\n"
+                f"• /configurar - Cambiar alertas\n"
+                f"• /estado - Ver tu configuración\n"
+                f"• /pausar - Pausar notificaciones\n"
+            )
+            await update.message.reply_text(welcome_back, parse_mode='Markdown')
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Manejar mensajes de texto (para umbral personalizado)"""
+        """Manejar mensajes de texto (para umbral personalizado o mensajes no reconocidos)"""
         if context.user_data.get('waiting_custom_threshold'):
             try:
                 percentage = float(update.message.text.strip().replace(',', '.'))
@@ -775,7 +830,8 @@ _Usa /export para descargar backup de la DB_
                         "❌ El porcentaje debe estar entre 0 y 100.\n\n"
                         "💡 *Tip:* Si quieres alertas frecuentes, usa 0.5 o 1.\n"
                         "Si solo quieres cambios importantes, usa 2 o 5.\n\n"
-                        "Intenta de nuevo:"
+                        "Intenta de nuevo:",
+                        parse_mode='Markdown'
                     )
                     return
 
@@ -823,8 +879,12 @@ _Usa /export para descargar backup de la DB_
                     "• 1.5\n"
                     "• 2\n"
                     "• 5\n\n"
-                    "Intenta de nuevo:"
+                    "Intenta de nuevo:",
+                    parse_mode='Markdown'
                 )
+        else:
+            # Mensaje no reconocido - mostrar bienvenida
+            await self._send_welcome_message(update)
 
     async def check_rates_and_notify(self, context: ContextTypes.DEFAULT_TYPE):
         """Verificar tasas periódicamente y notificar cambios"""
