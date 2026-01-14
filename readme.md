@@ -1,142 +1,283 @@
-# Bot de Tasas de Cauciones para Telegram
+# Bot de Cauciones v2.0 - Sistema Inteligente de Notificaciones
 
-Bot que obtiene y publica en tiempo real las tasas de cauciones desde PPI y las envía a través de Telegram.
+## 🆕 Novedades en v2.0
 
-## 🚀 Características
+### Sistema de Notificaciones Inteligente
 
-- ✅ Consulta de tasas en tiempo real (24h, 48h, 72h)
-- ✅ Actualizaciones automáticas cada 5 minutos para suscriptores
-- ✅ Comandos simples y fáciles de usar
-- ✅ Sistema de suscripción/pausa de notificaciones
+El bot ahora detecta **automáticamente** cuando las tasas cambian y notifica solo a los usuarios según sus preferencias:
 
-## 📋 Requisitos
+#### ✨ Tipos de Notificación:
 
-- Python 3.8+
-- Cuenta en PPI con acceso API
-- Bot de Telegram (crear con @BotFather)
+1. **🔔 Cualquier Cambio**
+   - Recibes una notificación cada vez que las tasas varíen
+   - Perfecto para traders activos
 
-## 🔧 Instalación
+2. **📊 Cambio Porcentual**
+   - Solo te notifica cuando el cambio supere un porcentaje que elijas
+   - Opciones rápidas: 0.5%, 1%, 2%, 5%
+   - O configura tu propio umbral personalizado
 
-1. **Clonar o descargar el código**
+### 🎯 Cómo Funciona
 
-2. **Instalar dependencias:**
-```bash
-pip install python-telegram-bot python-dotenv ppi-client
+```
+┌─────────────────────────────────────────┐
+│  Bot verifica tasas cada 60 segundos    │
+└──────────────┬──────────────────────────┘
+               │
+               ▼
+     ¿Detecta cambios?
+               │
+        ┌──────┴──────┐
+        │             │
+       NO            SÍ
+        │             │
+        │             ▼
+        │    ┌────────────────────┐
+        │    │ Calcula % de cambio│
+        │    └────────┬───────────┘
+        │             │
+        │             ▼
+        │    Para cada usuario:
+        │    ¿Cumple su umbral?
+        │             │
+        │      ┌──────┴──────┐
+        │     SÍ            NO
+        │      │              │
+        │      ▼              │
+        │  Notificar      Ignorar
+        │      │              │
+        └──────┴──────────────┘
 ```
 
-3. **Crear bot de Telegram:**
-   - Habla con [@BotFather](https://t.me/botfather) en Telegram
-   - Envía el comando `/newbot`
-   - Sigue las instrucciones
-   - Guarda el token que te proporciona
+## 📱 Comandos Disponibles
 
-4. **Configurar variables de entorno:**
-   - Copia `.env.example` a `.env`
-   - Completa con tus credenciales:
-     ```
-     PPI_PUBLIC_KEY=tu_public_key
-     PPI_SECRET_KEY=tu_secret_key
-     TELEGRAM_BOT_TOKEN=tu_token_de_telegram
-     ```
+### `/start`
+Mensaje de bienvenida con instrucciones
 
-## 🎮 Uso
+### `/tasas`
+Consultar tasas actuales con indicador de cambios
 
-### Iniciar el bot:
-```bash
-python caucion_bot.py
-```
-
-### Comandos disponibles en Telegram:
-
-- `/start` - Iniciar el bot y ver comandos
-- `/tasas` - Ver tasas actuales de cauciones
-- `/suscribir` - Activar actualizaciones automáticas cada 5 minutos
-- `/pausar` - Pausar actualizaciones automáticas
-- `/ayuda` - Ver ayuda de comandos
-
-## 📊 Ejemplo de salida
-
+Ejemplo de respuesta:
 ```
 📊 TASAS DE CAUCIONES
 
-🕐 24 horas: 35.50% TNA
-🕑 48 horas: 36.20% TNA
-🕒 72 horas: 36.80% TNA
+🕐 24H: 35.50% TNA 📈 +0.25% (+0.71%)
+🕑 48H: 36.20% TNA 📉 -0.10% (-0.28%)
+🕒 72H: 36.80% TNA
 
 🕒 Actualizado: 2026-01-12 14:30:45
 ```
 
-## ⚙️ Personalización
+### `/configurar`
+Configurar tus preferencias de notificación
 
-### Cambiar intervalo de actualizaciones
+Muestra un menú interactivo con opciones:
+- 🔔 Cualquier cambio
+- 📊 Cambio > 0.5%
+- 📊 Cambio > 1%
+- 📊 Cambio > 2%
+- 📊 Cambio > 5%
+- ⚙️ Personalizado
 
-En el archivo `caucion_bot.py`, modifica esta línea:
+### `/estado`
+Ver tu configuración actual
+
+Ejemplo de respuesta:
+```
+✅ Notificaciones activas
+
+Tipo: 📊 Cambio > 1%
+```
+
+### `/pausar`
+Pausar todas las notificaciones
+
+### `/ayuda`
+Ver lista de comandos
+
+## 🚀 Instalación
+
+### Requisitos
+- Python 3.8+
+- Cuenta PPI con acceso API
+- Bot de Telegram (crear con @BotFather)
+
+### Pasos
+
+1. **Instalar dependencias:**
+```bash
+pip install "python-telegram-bot[job-queue]" python-dotenv ppi-client
+```
+
+2. **Configurar variables de entorno:**
+```bash
+cp .env.example .env
+# Editar .env con tus credenciales
+```
+
+3. **Ejecutar:**
+```bash
+python caucion_bot_v2.py
+```
+
+## ⚙️ Configuración Avanzada
+
+### Cambiar intervalo de verificación
+
+En `caucion_bot_v2.py`, línea ~58:
 
 ```python
-application.job_queue.run_repeating(
-    self.send_rates_to_subscribers,
-    interval=300,  # Cambiar este valor (en segundos)
-    first=10
-)
+self.check_interval = 60  # Verificar cada 60 segundos
 ```
 
-Ejemplos:
-- `60` = 1 minuto
-- `300` = 5 minutos (por defecto)
-- `600` = 10 minutos
-- `3600` = 1 hora
+Opciones recomendadas:
+- `30` = 30 segundos (más rápido, usa más recursos)
+- `60` = 1 minuto (balanceado, recomendado)
+- `120` = 2 minutos (más lento, menos recursos)
+- `300` = 5 minutos (conservador)
 
-### Cambiar formato del mensaje
+⚠️ **Importante**: Intervalos muy cortos (< 30s) pueden sobrecargar la API de PPI
 
-Modifica el método `format_rates_message()` en la clase `CaucionBot`.
+### Tolerancia para detección de cambios
 
-## 🛠️ Solución de problemas
+En `caucion_bot_v2.py`, línea ~95:
 
-### Error: "TELEGRAM_BOT_TOKEN no configurado"
-- Asegúrate de tener el archivo `.env` con el token
-
-### Error de conexión a PPI
-- Verifica tus credenciales PPI en `.env`
-- Comprueba que tu cuenta tenga acceso API habilitado
-
-### El bot no responde
-- Verifica que el bot esté corriendo
-- Busca tu bot en Telegram por el username que le asignaste
-- Presiona "Start" para iniciar la conversación
-
-## 📝 Estructura del código
-
-```
-caucion_bot.py
-├── PPIConfig          # Configuración de PPI
-├── CaucionBot         # Clase principal del bot
-│   ├── connect_ppi()              # Conectar a PPI
-│   ├── get_caucion_rates()        # Obtener tasas
-│   ├── format_rates_message()     # Formatear mensaje
-│   ├── start_command()            # Handler /start
-│   ├── tasas_command()            # Handler /tasas
-│   ├── suscribir_command()        # Handler /suscribir
-│   ├── pausar_command()           # Handler /pausar
-│   └── send_rates_to_subscribers() # Envío periódico
-└── main()             # Punto de entrada
+```python
+'changed': abs(absolute_change) > 0.001  # Tolerancia para floats
 ```
 
-## 🔒 Seguridad
+Ajusta este valor si quieres cambiar la sensibilidad mínima.
 
-- **Nunca** compartas tu archivo `.env`
-- **Nunca** subas tus tokens a repositorios públicos
-- Agrega `.env` a tu `.gitignore`
+## 📊 Ejemplos de Uso
+
+### Caso 1: Trader Activo
+
+**Configuración:** 🔔 Cualquier cambio
+
+```
+Usuario: /configurar
+Bot: [Muestra menú]
+Usuario: [Click en "Cualquier cambio"]
+Bot: ✅ Recibirás notificación cada vez que cambien
+
+[Las tasas cambian de 35.50% a 35.55%]
+Bot: 🔔 ¡Cambio en las tasas!
+     24H: 35.55% 📈 +0.05% (+0.14%)
+```
+
+### Caso 2: Inversor Conservador
+
+**Configuración:** 📊 Cambio > 2%
+
+```
+Usuario: /configurar
+Bot: [Muestra menú]
+Usuario: [Click en "Cambio > 2%"]
+Bot: ✅ Notificaciones cuando cambio > 2%
+
+[Las tasas cambian de 35.50% a 35.60% (+0.28%)]
+Bot: [No notifica, cambio < 2%]
+
+[Las tasas cambian de 35.50% a 36.30% (+2.25%)]
+Bot: 🔔 ¡Cambio en las tasas!
+     24H: 36.30% 📈 +0.80% (+2.25%)
+```
+
+### Caso 3: Umbral Personalizado
+
+```
+Usuario: /configurar
+Bot: [Muestra menú]
+Usuario: [Click en "Personalizado"]
+Bot: Envía el porcentaje que deseas
+Usuario: 1.5
+Bot: ✅ Notificaciones cuando cambio > 1.5%
+```
+
+## 🔍 Monitoreo y Logs
+
+El bot registra eventos importantes:
+
+```
+2026-01-12 14:30:00 - INFO - Bot iniciado...
+2026-01-12 14:30:01 - INFO - Conectado a PPI exitosamente
+2026-01-12 14:30:01 - INFO - JobQueue configurado - verificando tasas cada 60 segundos
+2026-01-12 14:30:11 - INFO - Tasas iniciales guardadas
+2026-01-12 14:31:11 - INFO - Cambios detectados en las tasas: {'24h': {...}}
+2026-01-12 14:31:11 - INFO - Notificación enviada a 123456789
+```
+
+## 📈 Ventajas de v2.0
+
+| Característica | v1.0 | v2.0 |
+|---------------|------|------|
+| **Notificaciones** | Cada 5 minutos | Solo cuando cambian |
+| **Spam** | Alto | Cero |
+| **Personalización** | No | Sí (umbral configurable) |
+| **Detección de cambios** | No | Sí |
+| **Eficiencia** | Baja | Alta |
+| **Indicadores visuales** | No | Sí (📈📉 + %) |
+
+## 🆘 Troubleshooting
+
+### No recibo notificaciones
+
+1. Verifica tu configuración: `/estado`
+2. Asegúrate de que las tasas estén cambiando
+3. Revisa que tu umbral no sea muy alto
+4. Verifica los logs del bot
+
+### Recibo demasiadas notificaciones
+
+- Cambia a un umbral más alto: `/configurar` → Selecciona 2% o 5%
+
+### El bot no detecta cambios
+
+- Verifica que el `check_interval` no sea muy largo
+- Revisa la conexión a PPI en los logs
+
+## 🔐 Persistencia (Opcional)
+
+Para guardar las suscripciones entre reinicios, agrega:
+
+```python
+import json
+
+# Al inicio, cargar suscripciones
+def load_subscriptions(self):
+    try:
+        with open('subscriptions.json', 'r') as f:
+            data = json.load(f)
+            self.subscriptions = {
+                int(k): UserSubscription.from_dict(v) 
+                for k, v in data.items()
+            }
+    except FileNotFoundError:
+        pass
+
+# Al guardar una suscripción
+def save_subscriptions(self):
+    with open('subscriptions.json', 'w') as f:
+        data = {
+            str(k): v.to_dict() 
+            for k, v in self.subscriptions.items()
+        }
+        json.dump(data, f)
+```
+
+## 📝 Roadmap
+
+Futuras mejoras:
+- [ ] Gráficos de evolución de tasas
+- [ ] Estadísticas históricas
+- [ ] Alertas por Telegram channels
+- [ ] Dashboard web
+- [ ] Comparación con otros instrumentos
+
+## 🤝 Contribuir
+
+¡Mejoras y sugerencias son bienvenidas!
 
 ## 📄 Licencia
 
-Este código es de ejemplo educativo. Úsalo bajo tu propia responsabilidad.
-
-## 🤝 Contribuciones
-
-¡Las mejoras son bienvenidas! Algunas ideas:
-
-- Agregar más tipos de cauciones
-- Gráficos de evolución de tasas
-- Alertas cuando las tasas suben/bajan cierto porcentaje
-- Múltiples intervalos de actualización personalizables
-- Base de datos para historial de tasas
+MIT License
