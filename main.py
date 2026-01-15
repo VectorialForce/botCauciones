@@ -7,6 +7,9 @@ from os import getenv
 from dataclasses import dataclass
 import asyncio
 import logging
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 from pathlib import Path
@@ -23,6 +26,10 @@ MARKET_OPEN_HOUR = 10
 MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 16
 MARKET_CLOSE_MINUTE = 30
+
+# Configuración de email para sugerencias
+EMAIL_ADDRESS = getenv("EMAIL_ADDRESS")
+EMAIL_APP_PASSWORD = getenv("EMAIL_APP_PASSWORD")
 
 # Configurar logging
 logging.basicConfig(
@@ -583,6 +590,8 @@ class CaucionBot:
             "*📱 Gestionar alertas:*\n"
             "/estado - Ver tu configuración actual\n"
             "/pausar - Desactivar alertas temporalmente\n\n"
+            "*💬 Contacto:*\n"
+            "/sugerencia - Enviar una sugerencia o comentario\n\n"
             "*💡 ¿Cómo funciona?*\n"
             "El bot verifica las tasas cada minuto. Cuando detecta un cambio, "
             "te notifica solo si cumple con tu configuración.\n\n"
@@ -592,6 +601,65 @@ class CaucionBot:
             "¿Necesitas ayuda? Envía /start para volver al menú principal"
         )
         await update.message.reply_text(help_message, parse_mode='Markdown')
+
+    async def sugerencia_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /sugerencia - Iniciar flujo para enviar sugerencia por email"""
+        if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
+            await update.message.reply_text(
+                "❌ El sistema de sugerencias no está configurado.\n\n"
+                "Contacta al administrador del bot.",
+                parse_mode='Markdown'
+            )
+            return
+
+        context.user_data['waiting_suggestion'] = True
+        await update.message.reply_text(
+            "💬 *Enviar Sugerencia*\n\n"
+            "Escribí tu mensaje, sugerencia o comentario.\n\n"
+            "📝 Puede ser:\n"
+            "• Una idea para mejorar el bot\n"
+            "• Un problema que encontraste\n"
+            "• Cualquier comentario\n\n"
+            "Envía tu mensaje:",
+            parse_mode='Markdown'
+        )
+
+    def _send_suggestion_email(self, chat_id: int, username: str, message: str) -> bool:
+        """Enviar email con la sugerencia del usuario"""
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = EMAIL_ADDRESS
+            msg['To'] = EMAIL_ADDRESS
+            msg['Subject'] = f"[CaucionBot] Nueva sugerencia de usuario"
+
+            timestamp = datetime.now(ARGENTINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            body = f"""
+Nueva sugerencia recibida en CaucionBot
+
+Fecha: {timestamp}
+Chat ID: {chat_id}
+Usuario: @{username if username else 'Sin username'}
+
+Mensaje:
+{message}
+
+---
+Para responder, usa el chat_id en Telegram.
+            """
+
+            msg.attach(MIMEText(body, 'plain'))
+
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.starttls()
+                server.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
+                server.send_message(msg)
+
+            logger.info(f"Email de sugerencia enviado desde chat_id={chat_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error enviando email de sugerencia: {e}")
+            return False
 
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /stats - Ver estadísticas del bot (solo admin)"""
@@ -937,6 +1005,39 @@ _Usa /export para descargar backup de la DB_
                     "Intenta de nuevo:",
                     parse_mode='Markdown'
                 )
+
+        elif context.user_data.get('waiting_suggestion'):
+            chat_id = update.effective_chat.id
+            username = update.effective_user.username
+            message_text = update.message.text.strip()
+
+            if len(message_text) < 5:
+                await update.message.reply_text(
+                    "❌ El mensaje es muy corto.\n\n"
+                    "Por favor escribí un mensaje más detallado:",
+                    parse_mode='Markdown'
+                )
+                return
+
+            # Enviar email
+            success = self._send_suggestion_email(chat_id, username, message_text)
+
+            if success:
+                await update.message.reply_text(
+                    "✅ *¡Gracias por tu sugerencia!*\n\n"
+                    "Tu mensaje fue enviado correctamente.\n\n"
+                    "Aprecio tu feedback para mejorar el bot.",
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Hubo un error al enviar tu mensaje.\n\n"
+                    "Por favor intentá de nuevo más tarde.",
+                    parse_mode='Markdown'
+                )
+
+            context.user_data['waiting_suggestion'] = False
+
         else:
             # Mensaje no reconocido - mostrar bienvenida
             await self._send_welcome_message(update)
@@ -1056,6 +1157,7 @@ _Usa /export para descargar backup de la DB_
         application.add_handler(CommandHandler("ayuda", self.ayuda_command))
         application.add_handler(CommandHandler("stats", self.stats_command))
         application.add_handler(CommandHandler("export", self.export_command))
+        application.add_handler(CommandHandler("sugerencia", self.sugerencia_command))
 
         # Agregar handler para botones inline
         application.add_handler(CallbackQueryHandler(self.button_callback))
