@@ -438,9 +438,9 @@ class CaucionBot:
         if is_new_user:
             # Mensaje para usuarios nuevos - más guiado
             welcome_message = (
-                "👋 *¡Hola! Soy el Bot de Tasas de Cauciones*\n\n"
+                "👋 *¡Hola! Soy @caucho_bot*\n\n"
                 "Te ayudo a monitorear las tasas de cauciones en tiempo real.\n\n"
-                "🎯 *¿Qué puedo hacer por ti?*\n\n"
+                "🎯 *¿Qué puedo hacer por vos?*\n\n"
                 "📊 *Ver tasas actuales*\n"
                 "Usa /tasas para consultar las tasas de 1 día, 2 días, 3 días y 7 días\n\n"
                 "🔔 *Recibir alertas automáticas*\n"
@@ -853,9 +853,9 @@ _Usa /export para descargar backup de la DB_
 
         if is_new_user:
             welcome_message = (
-                "👋 *¡Hola! Soy el Bot de Tasas de Cauciones*\n\n"
+                "👋 *¡Hola! Soy @caucho_bot*\n\n"
                 "Te ayudo a monitorear las tasas de cauciones en tiempo real.\n\n"
-                "🎯 *¿Qué puedo hacer por ti?*\n\n"
+                "🎯 *¿Qué puedo hacer por vos?*\n\n"
                 "📊 *Ver tasas actuales*\n"
                 "Usa /tasas para consultar las tasas de 1 día, 2 días, 3 días y 7 días\n\n"
                 "🔔 *Recibir alertas automáticas*\n"
@@ -942,7 +942,7 @@ _Usa /export para descargar backup de la DB_
                     f"• /tasas - Ver tasas actuales\n"
                     f"• /estado - Verificar configuración\n"
                     f"• /configurar - Cambiar umbral\n\n"
-                    f"📊 Ya estoy monitoreando las tasas para ti.",
+                    f"📊 Ya estoy monitoreando las tasas para vos.",
                     parse_mode='Markdown'
                 )
 
@@ -1095,7 +1095,7 @@ def main():
     if is_dev:
         logger.info("🔧 Ejecutando en modo DESARROLLO")
         telegram_token = getenv("TELEGRAM_BOT_TOKEN_DEV") or getenv("TELEGRAM_BOT_TOKEN")
-        ppi_env = Environment.SANDBOX
+        ppi_env = Environment.PRODUCTION
         db_path = "data/bot_dev.db"
     else:
         logger.info("🚀 Ejecutando en modo PRODUCCIÓN")
