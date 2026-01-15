@@ -8,4 +8,5 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-.idea
+.idea/
+bot_local.db

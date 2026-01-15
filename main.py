@@ -9,15 +9,20 @@ import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
-import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 import sqlite3
 
 load_dotenv()
 
 # Timezone de Argentina
 ARGENTINA_TZ = ZoneInfo("America/Buenos_Aires")
+
+# Horario del mercado de cauciones (hora Argentina)
+MARKET_OPEN_HOUR = 10
+MARKET_OPEN_MINUTE = 30
+MARKET_CLOSE_HOUR = 16
+MARKET_CLOSE_MINUTE = 30
 
 # Configurar logging
 logging.basicConfig(
@@ -178,7 +183,7 @@ class SQLitePersistence:
                                   ORDER BY created_at DESC
                                   """)
 
-            subscriptions = {}
+            subscriptions = {},
             for row in cursor:
                 subscriptions[row['chat_id']] = UserSubscription(
                     chat_id=row['chat_id'],
@@ -245,16 +250,19 @@ class SQLitePersistence:
 
 
 class CaucionBot:
-    def __init__(self, telegram_token: str, ppi_env: Environment):
+    def __init__(self, telegram_token: str, ppi_env: Environment, db_path: str = "data/bot.db"):
         self.telegram_token = telegram_token
         self.ppi_config = PPIConfig.from_environment(ppi_env)
+        self.ppi_env = ppi_env
         self.ppi = None
         self.subscriptions = {}  # {chat_id: UserSubscription}
         self.last_rates = None  # Últimas tasas obtenidas
         self.check_interval = 60  # Verificar cada 60 segundos
+        self.last_close_fetch_date = None  # Fecha de última consulta al cierre
+        self.db_path = db_path
 
         # Sistema de persistencia SQLite
-        self.persistence = SQLitePersistence(db_path="data/bot.db")
+        self.persistence = SQLitePersistence(db_path=db_path)
 
         # Cargar suscripciones guardadas
         self.subscriptions = self.persistence.load_subscriptions()
@@ -267,6 +275,42 @@ class CaucionBot:
     async def _delete_subscription(self, chat_id: int):
         """Helper para eliminar una suscripción"""
         await self.persistence.delete_subscription(chat_id)
+
+    def is_market_open(self) -> bool:
+        """Verificar si el mercado de cauciones está abierto"""
+        now = datetime.now(ARGENTINA_TZ)
+
+        # Verificar si es fin de semana (5 = sábado, 6 = domingo)
+        if now.weekday() >= 5:
+            return False
+
+        # Verificar horario (10:00 - 16:30)
+        market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
+        market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
+
+        return market_open <= now <= market_close
+
+    def _fetch_closing_rates(self) -> bool:
+        """Consultar tasas de cierre (una única vez por día)"""
+        today = datetime.now(ARGENTINA_TZ).date()
+
+        # Si ya se consultó hoy, no volver a consultar
+        if self.last_close_fetch_date == today:
+            return False
+
+        logger.info("📥 Consultando tasas de cierre del día...")
+
+        if not self.ppi:
+            self.connect_ppi()
+
+        rates = self.get_caucion_rates()
+        if rates:
+            self.last_rates = rates
+            self.last_close_fetch_date = today
+            logger.info(f"✅ Tasas de cierre guardadas: {rates}")
+            return True
+
+        return False
 
     def connect_ppi(self):
         """Conectar a PPI"""
@@ -288,13 +332,16 @@ class CaucionBot:
             rates = {}
 
             tasa24h = self.ppi.marketdata.current("PESOS1", "CAUCIONES", "INMEDIATA")
-            rates['24h'] = float(tasa24h.get('price', 0))
+            rates['1d'] = float(tasa24h.get('price', 0))
 
             tasa48h = self.ppi.marketdata.current("PESOS2", "CAUCIONES", "INMEDIATA")
-            rates['48h'] = float(tasa48h.get('price', 0))
+            rates['2d'] = float(tasa48h.get('price', 0))
 
             tasa72h = self.ppi.marketdata.current("PESOS3", "CAUCIONES", "INMEDIATA")
-            rates['72h'] = float(tasa72h.get('price', 0))
+            rates['3d'] = float(tasa72h.get('price', 0))
+
+            tasa168h = self.ppi.marketdata.current("PESOS7", "CAUCIONES", "INMEDIATA")
+            rates['7d'] = float(tasa168h.get('price', 0))
 
             rates['timestamp'] = datetime.now(ARGENTINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -309,7 +356,7 @@ class CaucionBot:
             return None
 
         changes = {}
-        for period in ['24h', '48h', '72h']:
+        for period in ['1d', '2d', '3d', '7d']:
             old_value = old_rates.get(period, 0)
             new_value = new_rates.get(period, 0)
 
@@ -333,14 +380,18 @@ class CaucionBot:
 
         return changes
 
-    def format_rates_message(self, rates: dict, changes: dict = None) -> str:
+    def format_rates_message(self, rates: dict, changes: dict = None, market_closed: bool = False) -> str:
         """Formatear mensaje con las tasas"""
         if not rates:
             return "❌ Error al obtener las tasas de cauciones"
 
-        message = "📊 *TASAS DE CAUCIONES*\n\n"
+        if market_closed:
+            message = "🔒 *MERCADO CERRADO*\n\n"
+            message += "📊 *Últimas tasas registradas:*\n\n"
+        else:
+            message = "📊 *TASAS DE CAUCIONES*\n\n"
 
-        for period, label in [('24h', '🕐'), ('48h', '🕑'), ('72h', '🕒')]:
+        for period, label in [('1d', '🕐'), ('2d', '🕑'), ('3d', '🕒'), ('7d', '🕒')]:
             rate = rates[period]
             message += f"{label} {period.upper()}: `{rate:.2f}%` TNA"
 
@@ -353,6 +404,9 @@ class CaucionBot:
             message += "\n"
 
         message += f"\n🕒 Actualizado: {rates['timestamp']}"
+
+        if market_closed:
+            message += "\n\n📅 *Horario del mercado:* Lun-Vie 10:30 - 16:30"
 
         return message
 
@@ -388,7 +442,7 @@ class CaucionBot:
                 "Te ayudo a monitorear las tasas de cauciones en tiempo real.\n\n"
                 "🎯 *¿Qué puedo hacer por ti?*\n\n"
                 "📊 *Ver tasas actuales*\n"
-                "Usa /tasas para consultar las tasas de 24h, 48h y 72h\n\n"
+                "Usa /tasas para consultar las tasas de 1 día, 2 días, 3 días y 7 días\n\n"
                 "🔔 *Recibir alertas automáticas*\n"
                 "Te notifico cuando las tasas cambien. Puedes elegir:\n"
                 "  • Cualquier variación\n"
@@ -431,6 +485,26 @@ class CaucionBot:
 
     async def tasas_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /tasas - Mostrar tasas actuales"""
+        market_closed = not self.is_market_open()
+
+        if market_closed:
+            # Mercado cerrado: si no hay tasas, hacer única consulta del día
+            if not self.last_rates:
+                await update.message.reply_text("🔄 Obteniendo últimas tasas del día...")
+                self._fetch_closing_rates()
+
+            if self.last_rates:
+                message = self.format_rates_message(self.last_rates, market_closed=True)
+            else:
+                message = (
+                    "🔒 *MERCADO CERRADO*\n\n"
+                    "No se pudieron obtener las tasas.\n\n"
+                    "📅 *Horario del mercado:* Lun-Vie 10:30 - 16:30"
+                )
+            await update.message.reply_text(message, parse_mode='Markdown')
+            return
+
+        # Mercado abierto: consultar API
         await update.message.reply_text("🔄 Obteniendo tasas...")
 
         if not self.ppi:
@@ -438,9 +512,13 @@ class CaucionBot:
 
         rates = self.get_caucion_rates()
 
+        if rates:
+            # Guardar las tasas obtenidas
+            self.last_rates = rates
+
         # Calcular cambios si hay tasas previas
         changes = None
-        if self.last_rates:
+        if self.last_rates and rates:
             changes = self.calculate_changes(self.last_rates, rates)
 
         message = self.format_rates_message(rates, changes)
@@ -520,7 +598,7 @@ class CaucionBot:
         help_message = (
             "ℹ️ *Guía de Uso del Bot*\n\n"
             "*📊 Consultar tasas:*\n"
-            "/tasas - Ver las tasas actuales de cauciones 24h, 48h y 72h\n\n"
+            "/tasas - Ver las tasas actuales de cauciones 1 día, 2 días, 3 días y 7 días\n\n"
             "*🔔 Configurar alertas:*\n"
             "/configurar - Elegir cuándo recibir notificaciones:\n"
             "  • Cualquier cambio en las tasas\n"
@@ -779,7 +857,7 @@ _Usa /export para descargar backup de la DB_
                 "Te ayudo a monitorear las tasas de cauciones en tiempo real.\n\n"
                 "🎯 *¿Qué puedo hacer por ti?*\n\n"
                 "📊 *Ver tasas actuales*\n"
-                "Usa /tasas para consultar las tasas de 24h, 48h y 72h\n\n"
+                "Usa /tasas para consultar las tasas de 1 día, 2 días, 3 días y 7 días\n\n"
                 "🔔 *Recibir alertas automáticas*\n"
                 "Te notifico cuando las tasas cambien. Puedes elegir:\n"
                 "  • Cualquier variación\n"
@@ -888,6 +966,11 @@ _Usa /export para descargar backup de la DB_
 
     async def check_rates_and_notify(self, context: ContextTypes.DEFAULT_TYPE):
         """Verificar tasas periódicamente y notificar cambios"""
+        # No verificar si el mercado está cerrado
+        if not self.is_market_open():
+            logger.debug("Mercado cerrado - no se verifican tasas")
+            return
+
         if not self.ppi:
             self.connect_ppi()
 
@@ -935,8 +1018,15 @@ _Usa /export para descargar backup de la DB_
             # Actualizar últimas tasas
             self.last_rates = new_rates
 
+    async def fetch_closing_rates_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job programado para obtener las tasas al cierre del mercado (16:30)"""
+        logger.info("⏰ Ejecutando consulta de cierre programada (16:30)")
+        self._fetch_closing_rates()
+
     async def post_init(self, application: Application):
         """Inicialización post-startup"""
+        from datetime import time as dt_time
+
         # Conectar a PPI al iniciar
         self.connect_ppi()
 
@@ -948,6 +1038,19 @@ _Usa /export para descargar backup de la DB_
                 first=10  # Primera ejecución después de 10 segundos
             )
             logger.info(f"JobQueue configurado - verificando tasas cada {self.check_interval} segundos")
+
+            # Job diario a las 16:30 para guardar tasas de cierre
+            closing_time = dt_time(
+                hour=MARKET_CLOSE_HOUR,
+                minute=MARKET_CLOSE_MINUTE,
+                tzinfo=ARGENTINA_TZ
+            )
+            application.job_queue.run_daily(
+                self.fetch_closing_rates_job,
+                time=closing_time,
+                days=(0, 1, 2, 3, 4)  # Lunes a viernes
+            )
+            logger.info(f"📅 Job de cierre programado para las {MARKET_CLOSE_HOUR}:{MARKET_CLOSE_MINUTE:02d}")
         else:
             logger.warning("JobQueue no disponible - las notificaciones automáticas no funcionarán")
 
@@ -985,8 +1088,20 @@ def main():
     # Asegurar que existe directorio de datos
     Path("data").mkdir(exist_ok=True)
 
-    # Obtener token de Telegram desde variables de entorno
-    telegram_token = getenv("TELEGRAM_BOT_TOKEN")
+    # Detectar ambiente (dev o production)
+    bot_env = getenv("BOT_ENV", "production").lower()
+    is_dev = bot_env in ("dev", "development", "sandbox")
+
+    if is_dev:
+        logger.info("🔧 Ejecutando en modo DESARROLLO")
+        telegram_token = getenv("TELEGRAM_BOT_TOKEN_DEV") or getenv("TELEGRAM_BOT_TOKEN")
+        ppi_env = Environment.SANDBOX
+        db_path = "data/bot_dev.db"
+    else:
+        logger.info("🚀 Ejecutando en modo PRODUCCIÓN")
+        telegram_token = getenv("TELEGRAM_BOT_TOKEN")
+        ppi_env = Environment.PRODUCTION
+        db_path = "data/bot.db"
 
     if not telegram_token:
         logger.error("TELEGRAM_BOT_TOKEN no configurado en .env")
@@ -995,7 +1110,8 @@ def main():
     # Crear y ejecutar bot
     bot = CaucionBot(
         telegram_token=telegram_token,
-        ppi_env=Environment.PRODUCTION
+        ppi_env=ppi_env,
+        db_path=db_path
     )
     bot.run()
 

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Bot de Cauciones | Tasas en Tiempo Real</title>
-    <meta name="description" content="Bot de Telegram que publica tasas de cauciones en tiempo real desde PPI. Actualizaciones automáticas cada 5 minutos.">
+    <meta name="description" content="Bot de Telegram que monitorea tasas de cauciones en tiempo real utilizando la api de PPI. Notificaciones inteligentes y personalizables. Horario de mercado argentino.">
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -439,10 +439,9 @@
 </head>
 <body>
     <div class="background"></div>
-
     <header>
         <div class="header-content">
-            <div class="logo">📊 CAUCION.BOT</div>
+            <div class="logo">📊 CAUCHO_BOT</div>
             <a href="https://github.com/VectorialForce/BotCauciones" class="github-link" target="_blank">
                 ⭐ Ver en GitHub
             </a>
@@ -451,14 +450,14 @@
 
     <main>
         <section class="hero">
-            <div class="hero-tag">🤖 Bot de Telegram</div>
             <h1>
                 Tasas de <span class="gradient-text">Cauciones</span><br>
                 en Tiempo Real
             </h1>
             <p class="hero-description">
-                Bot automatizado que obtiene y publica las tasas de cauciones desde PPI
-                directamente en Telegram. Actualizaciones automáticas cada 5 minutos.
+                Bot inteligente que monitorea las tasas de cauciones.
+                Notificaciones personalizables, horario de mercado argentino (10:30-16:30)
+                y timezone de Buenos Aires.
             </p>
             <div class="cta-buttons">
                 <a href="https://t.me/caucho_bot" class="btn btn-primary" target="_blank">
@@ -475,37 +474,37 @@
                 <div class="feature-card">
                     <div class="feature-icon">⚡</div>
                     <h3>Tiempo Real</h3>
-                    <p>Obtiene las tasas actuales de cauciones 24h, 48h y 72h directamente desde la API de PPI.</p>
+                    <p>Obtiene las tasas actuales de cauciones de 1 Día, 2 Días, 3 Días y 7 Días directamente desde la API de PPI.</p>
                 </div>
 
                 <div class="feature-card">
                     <div class="feature-icon">🔔</div>
-                    <h3>Actualizaciones Automáticas</h3>
-                    <p>Suscríbete para recibir notificaciones cada 5 minutos con las tasas más recientes.</p>
+                    <h3>Notificaciones Inteligentes</h3>
+                    <p>Configura alertas personalizadas: cualquier cambio, o solo cuando supere tu umbral (0.5%, 1%, 2%, etc).</p>
                 </div>
 
                 <div class="feature-card">
-                    <div class="feature-icon">🎯</div>
-                    <h3>Fácil de Usar</h3>
-                    <p>Comandos simples: /tasas para consultar, /suscribir para notificaciones automáticas.</p>
+                    <div class="feature-icon">🕐</div>
+                    <h3>Horario de Mercado</h3>
+                    <p>Reconoce el horario del mercado (Lun-Vie 10:30-16:30). Fuera de horario muestra últimas tasas.</p>
                 </div>
 
                 <div class="feature-card">
-                    <div class="feature-icon">🛡️</div>
-                    <h3>Confiable</h3>
-                    <p>Desplegado en Railway con 100% uptime. Siempre disponible cuando lo necesitas.</p>
+                    <div class="feature-icon">🇦🇷</div>
+                    <h3>Timezone Argentina</h3>
+                    <p>Todas las fechas y horarios en hora de Buenos Aires. Pensado para el mercado local.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">💾</div>
+                    <h3>Persistencia SQLite</h3>
+                    <p>Tus preferencias se guardan en base de datos.</p>
                 </div>
 
                 <div class="feature-card">
                     <div class="feature-icon">🔓</div>
                     <h3>Open Source</h3>
-                    <p>Código completamente abierto en GitHub. Fork, modifica y despliega tu propia versión.</p>
-                </div>
-
-                <div class="feature-card">
-                    <div class="feature-icon">⚙️</div>
-                    <h3>Fácil Deploy</h3>
-                    <p>Guías completas para desplegar en Railway, Render o tu propio VPS en minutos.</p>
+                    <p>Código completamente abierto en GitHub. Fork, modifica y desplega tu propia versión.</p>
                 </div>
             </div>
         </section>
@@ -530,7 +529,7 @@
 <span class="comment"># Edita .env con tus credenciales</span>
 
 <span class="comment"># 4. Ejecutar el bot</span>
-<span class="command">python</span> caucion_bot.py
+<span class="command">python</span> main.py
 
 <span class="comment"># ✅ ¡Listo! Tu bot está funcionando</span></code></pre>
             </div>
@@ -539,20 +538,16 @@
         <section class="stats">
             <div class="stats-grid">
                 <div class="stat-item">
-                    <div class="stat-number">3</div>
-                    <div class="stat-label">Plazos disponibles</div>
+                    <div class="stat-number">4</div>
+                    <div class="stat-label">Plazos (1D, 2D, 3D, 7D)</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-number">5min</div>
-                    <div class="stat-label">Actualizaciones</div>
+                    <div class="stat-number">60s</div>
+                    <div class="stat-label">Verificación de tasas</div>
                 </div>
                 <div class="stat-item">
-                    <div class="stat-number">100%</div>
-                    <div class="stat-label">Uptime</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-number">24/7</div>
-                    <div class="stat-label">Disponibilidad</div>
+                    <div class="stat-number">16:30</div>
+                    <div class="stat-label">Cierre de mercado</div>
                 </div>
             </div>
         </section>
@@ -561,7 +556,7 @@
     <footer>
         <p>
             Hecho con 💙 usando <a href="https://python-telegram-bot.org/" target="_blank">python-telegram-bot</a>
-            y <a href="https://www.ppi.com.ar/" target="_blank">PPI API</a>
+            y <a href="https://www.portfoliopersonal.com/" target="_blank">PPI API</a>
         </p>
         <p style="margin-top: 1rem;">
             <a href="https://github.com/VectorialForce/BotCauciones/blob/master/LICENSE" target="_blank">MIT License</a> •
