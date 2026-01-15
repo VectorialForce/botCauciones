@@ -179,7 +179,7 @@ class SQLitePersistence:
                                   ORDER BY created_at DESC
                                   """)
 
-            subscriptions = {},
+            subscriptions = {}
             for row in cursor:
                 subscriptions[row['chat_id']] = UserSubscription(
                     chat_id=row['chat_id'],
