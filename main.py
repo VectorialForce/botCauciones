@@ -108,66 +108,62 @@ class SQLitePersistence:
         with sqlite3.connect(self.db_path) as conn:
             # Tabla de suscripciones
             conn.execute("""
-                         CREATE TABLE IF NOT EXISTS subscriptions
-                         (
-                             chat_id
-                             INTEGER
-                             PRIMARY
-                             KEY,
-                             subscription_type
-                             TEXT
-                             NOT
-                             NULL,
-                             threshold_percentage
-                             REAL
-                             NOT
-                             NULL
-                             DEFAULT
-                             0.0,
-                             created_at
-                             TIMESTAMP
-                             DEFAULT
-                             CURRENT_TIMESTAMP,
-                             updated_at
-                             TIMESTAMP
-                             DEFAULT
-                             CURRENT_TIMESTAMP
-                         )
-                         """)
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    chat_id INTEGER PRIMARY KEY,
+                    subscription_type TEXT NOT NULL,
+                    threshold_percentage REAL NOT NULL DEFAULT 0.0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-            # Tabla de historial de tasas (opcional pero útil)
-            conn.execute("""
-                         CREATE TABLE IF NOT EXISTS rate_history
-                         (
-                             id
-                             INTEGER
-                             PRIMARY
-                             KEY
-                             AUTOINCREMENT,
-                             rate_24h
-                             REAL
-                             NOT
-                             NULL,
-                             rate_48h
-                             REAL
-                             NOT
-                             NULL,
-                             rate_72h
-                             REAL
-                             NOT
-                             NULL,
-                             timestamp
-                             TIMESTAMP
-                             DEFAULT
-                             CURRENT_TIMESTAMP
-                         )
-                         """)
+            # Verificar si existe la tabla rate_history con estructura vieja
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rate_history'")
+            table_exists = cursor.fetchone() is not None
+
+            if table_exists:
+                # Verificar si tiene la estructura vieja (rate_24h)
+                cursor = conn.execute("PRAGMA table_info(rate_history)")
+                columns = [row[1] for row in cursor.fetchall()]
+
+                if 'rate_24h' in columns and 'rate_1d' not in columns:
+                    logger.info("🔄 Migrando tabla rate_history a nueva estructura...")
+                    # Migrar: crear tabla nueva, copiar datos, eliminar vieja, renombrar
+                    conn.execute("""
+                        CREATE TABLE rate_history_new (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            rate_1d REAL NOT NULL,
+                            rate_2d REAL NOT NULL,
+                            rate_3d REAL NOT NULL,
+                            rate_7d REAL NOT NULL DEFAULT 0,
+                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    conn.execute("""
+                        INSERT INTO rate_history_new (id, rate_1d, rate_2d, rate_3d, rate_7d, timestamp)
+                        SELECT id, rate_24h, rate_48h, rate_72h, 0, timestamp FROM rate_history
+                    """)
+                    conn.execute("DROP TABLE rate_history")
+                    conn.execute("ALTER TABLE rate_history_new RENAME TO rate_history")
+                    logger.info("✅ Migración completada")
+            else:
+                # Crear tabla nueva
+                conn.execute("""
+                    CREATE TABLE rate_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        rate_1d REAL NOT NULL,
+                        rate_2d REAL NOT NULL,
+                        rate_3d REAL NOT NULL,
+                        rate_7d REAL NOT NULL,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
 
             # Índice para búsquedas rápidas por fecha
             conn.execute("""
-                         CREATE INDEX IF NOT EXISTS idx_rate_history_timestamp
-                             ON rate_history(timestamp DESC)
-                         """)
+                CREATE INDEX IF NOT EXISTS idx_rate_history_timestamp
+                ON rate_history(timestamp DESC)
+            """)
 
             conn.commit()
 
@@ -221,13 +217,36 @@ class SQLitePersistence:
             logger.info(f"🗑️ Suscripción eliminada: chat_id={chat_id}")
 
     def save_rate_history(self, rates: dict):
-        """Guardar historial de tasas (útil para estadísticas)"""
+        """Guardar tasas en la base de datos"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
-                         INSERT INTO rate_history (rate_24h, rate_48h, rate_72h)
-                         VALUES (?, ?, ?)
-                         """, (rates['24h'], rates['48h'], rates['72h']))
+                INSERT INTO rate_history (rate_1d, rate_2d, rate_3d, rate_7d, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            """, (rates['1d'], rates['2d'], rates['3d'], rates['7d'], rates['timestamp']))
             conn.commit()
+        logger.debug(f"💾 Tasas guardadas en DB: {rates}")
+
+    def get_latest_rates(self) -> dict | None:
+        """Obtener las últimas tasas guardadas en la base de datos"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT rate_1d, rate_2d, rate_3d, rate_7d, timestamp
+                FROM rate_history
+                ORDER BY id DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+
+            if row:
+                return {
+                    '1d': row['rate_1d'],
+                    '2d': row['rate_2d'],
+                    '3d': row['rate_3d'],
+                    '7d': row['rate_7d'],
+                    'timestamp': row['timestamp']
+                }
+            return None
 
     def get_stats(self) -> dict:
         """Obtener estadísticas del bot"""
@@ -256,9 +275,8 @@ class CaucionBot:
         self.ppi_env = ppi_env
         self.ppi = None
         self.subscriptions = {}  # {chat_id: UserSubscription}
-        self.last_rates = None  # Últimas tasas obtenidas
+        self.last_rates = None  # Últimas tasas obtenidas (en memoria para comparar)
         self.check_interval = 60  # Verificar cada 60 segundos
-        self.last_close_fetch_date = None  # Fecha de última consulta al cierre
         self.db_path = db_path
 
         # Sistema de persistencia SQLite
@@ -266,6 +284,10 @@ class CaucionBot:
 
         # Cargar suscripciones guardadas
         self.subscriptions = self.persistence.load_subscriptions()
+
+        # Cargar últimas tasas de la DB para tener referencia
+        self.last_rates = self.persistence.get_latest_rates()
+
         logger.info(f"🔄 Bot inicializado con {len(self.subscriptions)} suscripciones")
 
     async def _save_subscription(self, subscription: UserSubscription):
@@ -289,28 +311,6 @@ class CaucionBot:
         market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
 
         return market_open <= now <= market_close
-
-    def _fetch_closing_rates(self) -> bool:
-        """Consultar tasas de cierre (una única vez por día)"""
-        today = datetime.now(ARGENTINA_TZ).date()
-
-        # Si ya se consultó hoy, no volver a consultar
-        if self.last_close_fetch_date == today:
-            return False
-
-        logger.info("📥 Consultando tasas de cierre del día...")
-
-        if not self.ppi:
-            self.connect_ppi()
-
-        rates = self.get_caucion_rates()
-        if rates:
-            self.last_rates = rates
-            self.last_close_fetch_date = today
-            logger.info(f"✅ Tasas de cierre guardadas: {rates}")
-            return True
-
-        return False
 
     def connect_ppi(self):
         """Conectar a PPI"""
@@ -484,44 +484,20 @@ class CaucionBot:
             await update.message.reply_text(welcome_back, parse_mode='Markdown')
 
     async def tasas_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando /tasas - Mostrar tasas actuales"""
-        market_closed = not self.is_market_open()
+        """Comando /tasas - Mostrar tasas desde la base de datos"""
+        # Leer las últimas tasas de la base de datos
+        rates = self.persistence.get_latest_rates()
 
-        if market_closed:
-            # Mercado cerrado: si no hay tasas, hacer única consulta del día
-            if not self.last_rates:
-                await update.message.reply_text("🔄 Obteniendo últimas tasas del día...")
-                self._fetch_closing_rates()
-
-            if self.last_rates:
-                message = self.format_rates_message(self.last_rates, market_closed=True)
-            else:
-                message = (
-                    "🔒 *MERCADO CERRADO*\n\n"
-                    "No se pudieron obtener las tasas.\n\n"
-                    "📅 *Horario del mercado:* Lun-Vie 10:30 - 16:30"
-                )
-            await update.message.reply_text(message, parse_mode='Markdown')
+        if not rates:
+            await update.message.reply_text(
+                "❌ No hay tasas registradas aún.\n\n"
+                "El bot registra tasas automáticamente durante el horario de mercado (Lun-Vie 10:30-16:30).",
+                parse_mode='Markdown'
+            )
             return
 
-        # Mercado abierto: consultar API
-        await update.message.reply_text("🔄 Obteniendo tasas...")
-
-        if not self.ppi:
-            self.connect_ppi()
-
-        rates = self.get_caucion_rates()
-
-        if rates:
-            # Guardar las tasas obtenidas
-            self.last_rates = rates
-
-        # Calcular cambios si hay tasas previas
-        changes = None
-        if self.last_rates and rates:
-            changes = self.calculate_changes(self.last_rates, rates)
-
-        message = self.format_rates_message(rates, changes)
+        market_closed = not self.is_market_open()
+        message = self.format_rates_message(rates, market_closed=market_closed)
         await update.message.reply_text(message, parse_mode='Markdown')
 
     async def configurar_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -706,17 +682,18 @@ _Usa /export para descargar backup de la DB_
 
         # Quick actions desde /start
         if data == "quick_tasas":
-            # Mostrar tasas directamente
-            if not self.ppi:
-                self.connect_ppi()
+            # Mostrar tasas desde la base de datos
+            rates = self.persistence.get_latest_rates()
 
-            rates = self.get_caucion_rates()
-            changes = None
-            if self.last_rates:
-                changes = self.calculate_changes(self.last_rates, rates)
-
-            message = self.format_rates_message(rates, changes)
-            message += "\n\n💡 *Tip:* Usa /configurar para recibir alertas cuando cambien"
+            if not rates:
+                message = (
+                    "❌ No hay tasas registradas aún.\n\n"
+                    "El bot registra tasas automáticamente durante el horario de mercado."
+                )
+            else:
+                market_closed = not self.is_market_open()
+                message = self.format_rates_message(rates, market_closed=market_closed)
+                message += "\n\n💡 *Tip:* Usa /configurar para recibir alertas cuando cambien"
 
             await query.edit_message_text(message, parse_mode='Markdown')
             return
@@ -965,7 +942,7 @@ _Usa /export para descargar backup de la DB_
             await self._send_welcome_message(update)
 
     async def check_rates_and_notify(self, context: ContextTypes.DEFAULT_TYPE):
-        """Verificar tasas periódicamente y notificar cambios"""
+        """Verificar tasas periódicamente, guardar en DB y notificar cambios"""
         # No verificar si el mercado está cerrado
         if not self.is_market_open():
             logger.debug("Mercado cerrado - no se verifican tasas")
@@ -974,17 +951,20 @@ _Usa /export para descargar backup de la DB_
         if not self.ppi:
             self.connect_ppi()
 
-        # Obtener nuevas tasas
+        # Obtener nuevas tasas de la API
         new_rates = self.get_caucion_rates()
 
         if not new_rates:
             logger.error("No se pudieron obtener las tasas")
             return
 
+        # Guardar tasas en la base de datos
+        self.persistence.save_rate_history(new_rates)
+
         # Si es la primera vez, solo guardar las tasas
         if not self.last_rates:
             self.last_rates = new_rates
-            logger.info("Tasas iniciales guardadas")
+            logger.info("Tasas iniciales guardadas en DB")
             return
 
         # Calcular cambios
@@ -1015,13 +995,21 @@ _Usa /export para descargar backup de la DB_
                         if "bot was blocked" in str(e).lower():
                             del self.subscriptions[chat_id]
 
-            # Actualizar últimas tasas
+            # Actualizar últimas tasas en memoria
             self.last_rates = new_rates
 
     async def fetch_closing_rates_job(self, context: ContextTypes.DEFAULT_TYPE):
         """Job programado para obtener las tasas al cierre del mercado (16:30)"""
         logger.info("⏰ Ejecutando consulta de cierre programada (16:30)")
-        self._fetch_closing_rates()
+
+        if not self.ppi:
+            self.connect_ppi()
+
+        rates = self.get_caucion_rates()
+        if rates:
+            self.persistence.save_rate_history(rates)
+            self.last_rates = rates
+            logger.info(f"✅ Tasas de cierre guardadas en DB: {rates}")
 
     async def post_init(self, application: Application):
         """Inicialización post-startup"""
