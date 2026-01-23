@@ -1167,6 +1167,34 @@ _Usa /export para descargar backup de la DB_
             self.last_rates = rates
             logger.info(f"✅ Tasas de cierre guardadas en DB: {rates}")
 
+    async def backup_db_to_telegram(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job diario: enviar copia de la base de datos al admin por Telegram"""
+        import shutil
+
+        ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
+        if ADMIN_CHAT_ID == 0:
+            logger.warning("Backup no enviado: ADMIN_CHAT_ID no configurado")
+            return
+
+        try:
+            timestamp = datetime.now(ARGENTINA_TZ).strftime("%Y%m%d_%H%M%S")
+            backup_file = Path(f"caucion_bot_backup_{timestamp}.db")
+            shutil.copy2(self.persistence.db_path, backup_file)
+
+            with open(backup_file, 'rb') as f:
+                await context.bot.send_document(
+                    chat_id=ADMIN_CHAT_ID,
+                    document=f,
+                    filename=backup_file.name,
+                    caption=f"📦 Backup automático diario\n🕐 {datetime.now(ARGENTINA_TZ).strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+
+            backup_file.unlink()
+            logger.info("✅ Backup diario enviado por Telegram")
+
+        except Exception as e:
+            logger.error(f"❌ Error en backup diario: {e}")
+
     async def post_init(self, application: Application):
         """Inicialización post-startup"""
         from datetime import time as dt_time
@@ -1195,6 +1223,14 @@ _Usa /export para descargar backup de la DB_
                 days=(0, 1, 2, 3, 4)  # Lunes a viernes
             )
             logger.info(f"📅 Job de cierre programado para las {MARKET_CLOSE_HOUR}:{MARKET_CLOSE_MINUTE:02d}")
+
+            # Job diario de backup a las 23:00
+            backup_time = dt_time(hour=23, minute=0, tzinfo=ARGENTINA_TZ)
+            application.job_queue.run_daily(
+                self.backup_db_to_telegram,
+                time=backup_time
+            )
+            logger.info("📅 Job de backup diario programado para las 23:00")
         else:
             logger.warning("JobQueue no disponible - las notificaciones automáticas no funcionarán")
 
