@@ -24,8 +24,8 @@ ARGENTINA_TZ = ZoneInfo("America/Buenos_Aires")
 # Horario del mercado de cauciones (hora Argentina)
 MARKET_OPEN_HOUR = 10
 MARKET_OPEN_MINUTE = 30
-MARKET_CLOSE_HOUR = 16
-MARKET_CLOSE_MINUTE = 30
+MARKET_CLOSE_HOUR = 17
+MARKET_CLOSE_MINUTE = 00
 
 # Configuración de email para sugerencias
 EMAIL_ADDRESS = getenv("EMAIL_ADDRESS")
@@ -313,7 +313,7 @@ class CaucionBot:
         if now.weekday() >= 5:
             return False
 
-        # Verificar horario (10:00 - 16:30)
+        # Verificar horario (10:00 - 17:00)
         market_open = now.replace(hour=MARKET_OPEN_HOUR, minute=MARKET_OPEN_MINUTE, second=0, microsecond=0)
         market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
 
@@ -413,7 +413,7 @@ class CaucionBot:
         message += f"\n🕒 Actualizado: {rates['timestamp']}"
 
         if market_closed:
-            message += "\n\n📅 *Horario del mercado:* Lun-Vie 10:30 - 16:30"
+            message += "\n\n📅 *Horario del mercado:* Lun-Vie 10:30 - 17:00"
 
         return message
 
@@ -498,7 +498,7 @@ class CaucionBot:
         if not rates:
             await update.message.reply_text(
                 "❌ No hay tasas registradas aún.\n\n"
-                "El bot registra tasas automáticamente durante el horario de mercado (Lun-Vie 10:30-16:30).",
+                "El bot registra tasas automáticamente durante el horario de mercado (Lun-Vie 10:30-17:00).",
                 parse_mode='Markdown'
             )
             return
@@ -1100,8 +1100,8 @@ _Usa /export para descargar backup de la DB_
             self.last_rates = new_rates
 
     async def fetch_closing_rates_job(self, context: ContextTypes.DEFAULT_TYPE):
-        """Job programado para obtener las tasas al cierre del mercado (16:30)"""
-        logger.info("⏰ Ejecutando consulta de cierre programada (16:30)")
+        """Job programado para obtener las tasas al cierre del mercado (17:00)"""
+        logger.info("⏰ Ejecutando consulta de cierre programada (17:00)")
 
         if not self.ppi:
             self.connect_ppi()
@@ -1128,7 +1128,7 @@ _Usa /export para descargar backup de la DB_
             )
             logger.info(f"JobQueue configurado - verificando tasas cada {self.check_interval} segundos")
 
-            # Job diario a las 16:30 para guardar tasas de cierre
+            # Job diario a las 17:00 para guardar tasas de cierre
             closing_time = dt_time(
                 hour=MARKET_CLOSE_HOUR,
                 minute=MARKET_CLOSE_MINUTE,
