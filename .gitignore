@@ -1,5 +1,4 @@
 .env
-data/
 *.db
 *.db-journal
 *.db-wal
@@ -9,4 +8,3 @@ __pycache__/
 .venv/
 venv/
 .idea/
-bot_local.db

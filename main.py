@@ -740,6 +740,61 @@ _Usa /export para descargar backup de la DB_
             logger.error(f"Error en /export: {e}")
             await update.message.reply_text(f"❌ Error creando backup: {str(e)}")
 
+    async def restore_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /restore - Restaurar base de datos desde archivo (solo admin)"""
+        ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
+
+        if ADMIN_CHAT_ID == 0:
+            pass
+        elif update.effective_chat.id != ADMIN_CHAT_ID:
+            await update.message.reply_text("⛔ Solo el administrador puede usar este comando")
+            return
+
+        await update.message.reply_text(
+            "📥 *Restaurar base de datos*\n\n"
+            "Enviame el archivo `.db` como documento para restaurar la base de datos.\n\n"
+            "⚠️ *Atención:* Esto reemplazará la base de datos actual.",
+            parse_mode='Markdown'
+        )
+        context.user_data['awaiting_restore'] = True
+
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Manejar documentos recibidos para restore"""
+        ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
+
+        if update.effective_chat.id != ADMIN_CHAT_ID:
+            return
+
+        if not context.user_data.get('awaiting_restore'):
+            return
+
+        document = update.message.document
+        if not document.file_name.endswith('.db'):
+            await update.message.reply_text("❌ El archivo debe ser un `.db`")
+            return
+
+        try:
+            await update.message.reply_text("⏳ Descargando y restaurando...")
+
+            file = await context.bot.get_file(document.file_id)
+            await file.download_to_drive("data/bot.db")
+
+            context.user_data['awaiting_restore'] = False
+
+            # Reinicializar la base de datos
+            self.persistence = SQLitePersistence()
+
+            await update.message.reply_text(
+                "✅ *Base de datos restaurada exitosamente*\n\n"
+                "La base de datos ha sido reemplazada con el archivo recibido.",
+                parse_mode='Markdown'
+            )
+            logger.info(f"Base de datos restaurada por usuario {update.effective_chat.id}")
+
+        except Exception as e:
+            logger.error(f"Error en restore: {e}")
+            await update.message.reply_text(f"❌ Error restaurando: {str(e)}")
+
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manejar callbacks de botones inline"""
         query = update.callback_query
@@ -1158,12 +1213,19 @@ _Usa /export para descargar backup de la DB_
         application.add_handler(CommandHandler("stats", self.stats_command))
         application.add_handler(CommandHandler("export", self.export_command))
         application.add_handler(CommandHandler("sugerencia", self.sugerencia_command))
+        application.add_handler(CommandHandler("restore", self.restore_command))
 
         # Agregar handler para botones inline
         application.add_handler(CallbackQueryHandler(self.button_callback))
 
-        # Agregar handler para mensajes de texto
+        # Agregar handler para documentos (restore)
         from telegram.ext import MessageHandler, filters
+        application.add_handler(MessageHandler(
+            filters.Document.ALL,
+            self.handle_document
+        ))
+
+        # Agregar handler para mensajes de texto
         application.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND,
             self.handle_message
