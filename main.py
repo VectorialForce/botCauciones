@@ -7,9 +7,6 @@ from os import getenv
 from dataclasses import dataclass
 import asyncio
 import logging
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 from pathlib import Path
@@ -27,9 +24,6 @@ MARKET_OPEN_MINUTE = 30
 MARKET_CLOSE_HOUR = 17
 MARKET_CLOSE_MINUTE = 00
 
-# Configuración de email para sugerencias
-EMAIL_ADDRESS = getenv("EMAIL_ADDRESS")
-EMAIL_APP_PASSWORD = getenv("EMAIL_APP_PASSWORD")
 
 # Configurar logging
 logging.basicConfig(
@@ -172,6 +166,18 @@ class SQLitePersistence:
                 ON rate_history(timestamp DESC)
             """)
 
+            # Tabla de sugerencias
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS suggestions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    username TEXT,
+                    message TEXT NOT NULL,
+                    read INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             conn.commit()
 
         logger.info("✅ Base de datos SQLite inicializada")
@@ -254,6 +260,34 @@ class SQLitePersistence:
                     'timestamp': row['timestamp']
                 }
             return None
+
+    async def save_suggestion(self, chat_id: int, username: str, message: str):
+        """Guardar una sugerencia en la base de datos"""
+        async with self.write_lock:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT INTO suggestions (chat_id, username, message)
+                    VALUES (?, ?, ?)
+                """, (chat_id, username, message))
+                conn.commit()
+        logger.info(f"💬 Sugerencia guardada de chat_id={chat_id}")
+
+    def get_suggestions(self, unread_only: bool = False) -> list:
+        """Obtener sugerencias de la base de datos"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            query = "SELECT * FROM suggestions"
+            if unread_only:
+                query += " WHERE read = 0"
+            query += " ORDER BY created_at DESC LIMIT 20"
+            cursor = conn.execute(query)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def mark_suggestion_read(self, suggestion_id: int):
+        """Marcar una sugerencia como leída"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE suggestions SET read = 1 WHERE id = ?", (suggestion_id,))
+            conn.commit()
 
     def get_stats(self) -> dict:
         """Obtener estadísticas del bot"""
@@ -603,15 +637,7 @@ class CaucionBot:
         await update.message.reply_text(help_message, parse_mode='Markdown')
 
     async def sugerencia_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando /sugerencia - Iniciar flujo para enviar sugerencia por email"""
-        if not EMAIL_ADDRESS or not EMAIL_APP_PASSWORD:
-            await update.message.reply_text(
-                "❌ El sistema de sugerencias no está configurado.\n\n"
-                "Contacta al administrador del bot.",
-                parse_mode='Markdown'
-            )
-            return
-
+        """Comando /sugerencia - Iniciar flujo para enviar sugerencia"""
         context.user_data['waiting_suggestion'] = True
         await update.message.reply_text(
             "💬 *Enviar Sugerencia*\n\n"
@@ -624,42 +650,33 @@ class CaucionBot:
             parse_mode='Markdown'
         )
 
-    def _send_suggestion_email(self, chat_id: int, username: str, message: str) -> bool:
-        """Enviar email con la sugerencia del usuario"""
-        try:
-            msg = MIMEMultipart()
-            msg['From'] = EMAIL_ADDRESS
-            msg['To'] = EMAIL_ADDRESS
-            msg['Subject'] = f"[CaucionBot] Nueva sugerencia de usuario"
+    async def sugerencias_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /sugerencias - Ver sugerencias (solo admin)"""
+        ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
 
-            timestamp = datetime.now(ARGENTINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
-            body = f"""
-Nueva sugerencia recibida en CaucionBot
+        if ADMIN_CHAT_ID != 0 and update.effective_chat.id != ADMIN_CHAT_ID:
+            await update.message.reply_text("⛔ Solo el administrador puede usar este comando")
+            return
 
-Fecha: {timestamp}
-Chat ID: {chat_id}
-Usuario: @{username if username else 'Sin username'}
+        suggestions = self.persistence.get_suggestions(unread_only=False)
 
-Mensaje:
-{message}
+        if not suggestions:
+            await update.message.reply_text("📭 No hay sugerencias registradas.")
+            return
 
----
-Para responder, usa el chat_id en Telegram.
-            """
+        message = "💬 *Sugerencias recibidas:*\n\n"
+        for s in suggestions[:10]:  # Mostrar últimas 10
+            status = "🆕" if not s['read'] else "✓"
+            username = f"@{s['username']}" if s['username'] else f"ID:{s['chat_id']}"
+            fecha = s['created_at'][:16] if s['created_at'] else ""
+            texto = s['message'][:100] + "..." if len(s['message']) > 100 else s['message']
+            message += f"{status} *{username}* ({fecha})\n{texto}\n\n"
 
-            msg.attach(MIMEText(body, 'plain'))
+            # Marcar como leída
+            if not s['read']:
+                self.persistence.mark_suggestion_read(s['id'])
 
-            with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                server.starttls()
-                server.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
-                server.send_message(msg)
-
-            logger.info(f"Email de sugerencia enviado desde chat_id={chat_id}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Error enviando email de sugerencia: {e}")
-            return False
+        await update.message.reply_text(message, parse_mode='Markdown')
 
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /stats - Ver estadísticas del bot (solo admin)"""
@@ -690,7 +707,7 @@ Para responder, usa el chat_id en Telegram.
 📊 Con umbral: {stats['percentage_users']}
 📈 Umbral promedio: {stats['avg_threshold']}%
 
-💾 Tamaño DB: {db_size:.2f} MB
+💾 Tamaño DB: {db_size:.2f} MB  
 🗄️ Base de datos: SQLite
 🚂 Desplegado en: home-server
 
@@ -1074,22 +1091,15 @@ _Usa /export para descargar backup de la DB_
                 )
                 return
 
-            # Enviar email
-            success = self._send_suggestion_email(chat_id, username, message_text)
+            # Guardar en base de datos
+            await self.persistence.save_suggestion(chat_id, username, message_text)
 
-            if success:
-                await update.message.reply_text(
-                    "✅ *¡Gracias por tu sugerencia!*\n\n"
-                    "Tu mensaje fue enviado correctamente.\n\n"
-                    "Aprecio tu feedback para mejorar el bot.",
-                    parse_mode='Markdown'
-                )
-            else:
-                await update.message.reply_text(
-                    "❌ Hubo un error al enviar tu mensaje.\n\n"
-                    "Por favor intentá de nuevo más tarde.",
-                    parse_mode='Markdown'
-                )
+            await update.message.reply_text(
+                "✅ *¡Gracias por tu sugerencia!*\n\n"
+                "Tu mensaje fue registrado correctamente.\n\n"
+                "Aprecio tu feedback para mejorar el bot.",
+                parse_mode='Markdown'
+            )
 
             context.user_data['waiting_suggestion'] = False
 
@@ -1249,6 +1259,7 @@ _Usa /export para descargar backup de la DB_
         application.add_handler(CommandHandler("stats", self.stats_command))
         application.add_handler(CommandHandler("export", self.export_command))
         application.add_handler(CommandHandler("sugerencia", self.sugerencia_command))
+        application.add_handler(CommandHandler("sugerencias", self.sugerencias_command))
         application.add_handler(CommandHandler("restore", self.restore_command))
 
         # Agregar handler para botones inline
