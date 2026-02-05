@@ -427,11 +427,11 @@ class CaucionBot:
             return any(changes[period]['changed'] for period in changes)
 
         if subscription.subscription_type == SubscriptionType.PERCENTAGE:
-            # Notificar si algún cambio supera el umbral
+            # Notificar si algún cambio supera el umbral (en puntos porcentuales absolutos)
             for period in changes:
                 if changes[period]['changed']:
-                    abs_percentage = abs(changes[period]['percentage'])
-                    if abs_percentage >= subscription.threshold_percentage:
+                    abs_change = abs(changes[period]['absolute'])
+                    if abs_change >= subscription.threshold_percentage:
                         return True
             return False
 
@@ -692,7 +692,7 @@ Para responder, usa el chat_id en Telegram.
 
 💾 Tamaño DB: {db_size:.2f} MB
 🗄️ Base de datos: SQLite
-🚂 Desplegado en: Railway
+🚂 Desplegado en: home-server
 
 _Usa /export para descargar backup de la DB_
             """
