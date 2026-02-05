@@ -521,6 +521,7 @@ class CaucionBot:
                 f"• /configurar - Cambiar alertas\n"
                 f"• /estado - Ver tu configuración\n"
                 f"• /pausar - Pausar notificaciones\n"
+                f"• /sugerencia - Enviar comentario\n"
             )
             await update.message.reply_text(welcome_back, parse_mode='Markdown')
 
@@ -885,6 +886,7 @@ _Usa /export para descargar backup de la DB_
                 "• /configurar - Configurar alertas automáticas\n"
                 "• /estado - Ver tu configuración actual\n"
                 "• /pausar - Pausar alertas\n"
+                "• /sugerencia - Enviar comentario o idea\n"
                 "• /ayuda - Volver a ver esta ayuda\n\n"
                 "*Tipos de alertas:*\n\n"
                 "🔔 *Cualquier cambio*\n"
@@ -1011,6 +1013,7 @@ _Usa /export para descargar backup de la DB_
                 f"• /configurar - Cambiar alertas\n"
                 f"• /estado - Ver tu configuración\n"
                 f"• /pausar - Pausar notificaciones\n"
+                f"• /sugerencia - Enviar comentario\n"
             )
             await update.message.reply_text(welcome_back, parse_mode='Markdown')
 
