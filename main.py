@@ -955,6 +955,67 @@ class CaucionBot:
             parse_mode='Markdown'
         )
 
+    async def broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /broadcast - Enviar mensaje a todos los suscriptores (solo admin)"""
+        ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
+
+        if ADMIN_CHAT_ID == 0 or update.effective_chat.id != ADMIN_CHAT_ID:
+            await update.message.reply_text("⛔ Solo el administrador puede usar este comando")
+            return
+
+        # Verificar si hay mensaje
+        if not context.args:
+            await update.message.reply_text(
+                "📢 *Broadcast*\n\n"
+                "Uso: `/broadcast <mensaje>`\n\n"
+                "Ejemplo:\n"
+                "`/broadcast Hola a todos! El bot estará en mantenimiento mañana.`",
+                parse_mode='Markdown'
+            )
+            return
+
+        message_text = ' '.join(context.args)
+
+        await update.message.reply_text(
+            f"📤 Enviando mensaje a {len(self.subscriptions)} suscriptores..."
+        )
+
+        sent = 0
+        failed = 0
+        blocked = []
+
+        for chat_id in list(self.subscriptions.keys()):
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"📢 *Mensaje del administrador:*\n\n{message_text}",
+                    parse_mode='Markdown'
+                )
+                sent += 1
+                # Pequeña pausa para evitar rate limiting
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                failed += 1
+                if "bot was blocked" in str(e).lower():
+                    blocked.append(chat_id)
+                logger.warning(f"[BROADCAST] Error enviando a {chat_id}: {e}")
+
+        # Eliminar usuarios que bloquearon el bot
+        for chat_id in blocked:
+            if chat_id in self.subscriptions:
+                del self.subscriptions[chat_id]
+                await self.persistence.delete_subscription(chat_id)
+
+        logger.info(f"[BROADCAST] Enviados: {sent} | Fallidos: {failed} | Bloqueados: {len(blocked)}")
+
+        await update.message.reply_text(
+            f"✅ *Broadcast completado*\n\n"
+            f"📤 Enviados: {sent}\n"
+            f"❌ Fallidos: {failed}\n"
+            f"🚫 Bloqueados (removidos): {len(blocked)}",
+            parse_mode='Markdown'
+        )
+
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manejar documentos recibidos - actualmente no utilizado con PostgreSQL"""
         pass
@@ -1437,6 +1498,7 @@ class CaucionBot:
         application.add_handler(CommandHandler("sugerencia", self.sugerencia_command))
         application.add_handler(CommandHandler("sugerencias", self.sugerencias_command))
         application.add_handler(CommandHandler("restore", self.restore_command))
+        application.add_handler(CommandHandler("broadcast", self.broadcast_command))
 
         # Agregar handler para botones inline
         application.add_handler(CallbackQueryHandler(self.button_callback))
