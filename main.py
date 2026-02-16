@@ -25,12 +25,22 @@ MARKET_CLOSE_HOUR = 17
 MARKET_CLOSE_MINUTE = 00
 
 
-# Configurar logging
+# Configurar logging mejorado
+LOG_FORMAT = '%(asctime)s | %(levelname)-8s | %(message)s'
+LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format=LOG_FORMAT,
+    datefmt=LOG_DATE_FORMAT,
     level=logging.INFO
 )
-logger = logging.getLogger(__name__)
+
+# Reducir logs de librerías externas
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('telegram').setLevel(logging.WARNING)
+logging.getLogger('apscheduler').setLevel(logging.WARNING)
+
+logger = logging.getLogger('CauchoBot')
 
 
 class Environment(Enum):
@@ -447,8 +457,20 @@ class CaucionBot:
         self.subscriptions = {}  # {chat_id: UserSubscription}
         self.last_rates = None  # Últimas tasas obtenidas (en memoria para comparar)
         self.check_interval = 60  # Verificar cada 60 segundos
+        self.start_time = datetime.now(ARGENTINA_TZ)
+
+        # Estadísticas de sesión
+        self.stats = {
+            'checks': 0,
+            'changes_detected': 0,
+            'notifications_sent': 0,
+            'notification_errors': 0,
+            'api_errors': 0,
+            'commands_processed': 0
+        }
 
         # Sistema de persistencia PostgreSQL
+        logger.info("[INIT] Conectando a PostgreSQL...")
         self.persistence = PostgreSQLPersistence()
 
         # Cargar suscripciones guardadas
@@ -457,7 +479,12 @@ class CaucionBot:
         # Cargar últimas tasas de la DB para tener referencia
         self.last_rates = self.persistence.get_latest_rates()
 
-        logger.info(f"🔄 Bot inicializado con {len(self.subscriptions)} suscripciones")
+        logger.info("=" * 50)
+        logger.info("[INIT] Bot CauchoCauciones inicializado")
+        logger.info(f"[INIT] Suscriptores activos: {len(self.subscriptions)}")
+        if self.last_rates:
+            logger.info(f"[INIT] Última tasa 1D: {self.last_rates['1d']:.2f}%")
+        logger.info("=" * 50)
 
     async def _save_subscription(self, subscription: UserSubscription):
         """Helper para guardar una suscripción"""
@@ -599,10 +626,17 @@ class CaucionBot:
 
         return False
 
+    def _log_command(self, command: str, chat_id: int, extra: str = ""):
+        """Helper para loguear comandos"""
+        self.stats['commands_processed'] += 1
+        extra_info = f" | {extra}" if extra else ""
+        logger.info(f"[CMD] /{command} | user={chat_id}{extra_info}")
+
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /start"""
         chat_id = update.effective_chat.id
         is_new_user = chat_id not in self.subscriptions
+        self._log_command("start", chat_id, "nuevo" if is_new_user else "existente")
 
         if is_new_user:
             # Mensaje para usuarios nuevos - más guiado
@@ -613,10 +647,10 @@ class CaucionBot:
                 "📊 *Ver tasas actuales*\n"
                 "Usa /tasas para consultar las tasas de 1 día, 2 días, 3 días y 7 días\n\n"
                 "🔔 *Recibir alertas automáticas*\n"
-                "Te notifico cuando las tasas cambien. Puedes elegir:\n"
+                "Te notifico cuando las tasas cambien. Podes elegir:\n"
                 "  • Cualquier variación\n"
                 "  • Solo cambios importantes (>1%, >2%, etc.)\n\n"
-                "¿Quieres empezar? Elige una opción:"
+                "¿Queres empezar? Elige una opción:"
             )
 
             keyboard = [
@@ -655,6 +689,7 @@ class CaucionBot:
 
     async def tasas_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /tasas - Mostrar tasas desde la base de datos"""
+        self._log_command("tasas", update.effective_chat.id)
         # Leer las últimas tasas de la base de datos
         rates = self.persistence.get_latest_rates()
 
@@ -672,6 +707,7 @@ class CaucionBot:
 
     async def configurar_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /configurar - Mostrar opciones de configuración"""
+        self._log_command("configurar", update.effective_chat.id)
         keyboard = [
             [
                 InlineKeyboardButton("🔔 Cualquier cambio", callback_data="config_any_change")
@@ -693,8 +729,8 @@ class CaucionBot:
 
         message = (
             "⚙️ *Configurar Notificaciones*\n\n"
-            "Elige cuándo quieres recibir notificaciones:\n\n"
-            "🔔 *Cualquier cambio* - Te notificaré cada vez que las tasas varíen\n\n"
+            "Elegi cuándo queres recibir notificaciones:\n\n"
+            "🔔 *Cualquier cambio* - Te voy a notificar cada vez que las tasas varíen\n\n"
             "📊 *Cambio porcentual* - Solo cuando el cambio supere el % que elijas\n\n"
             "Selecciona una opción:"
         )
@@ -710,7 +746,7 @@ class CaucionBot:
         chat_id = update.effective_chat.id
 
         if chat_id not in self.subscriptions:
-            message = "ℹ️ No tienes notificaciones activas.\n\nUsa /configurar para activarlas."
+            message = "ℹ️ No tenes notificaciones activas.\n\nUsa /configurar para activarlas."
         else:
             sub = self.subscriptions[chat_id]
             if sub.subscription_type == SubscriptionType.ANY_CHANGE:
@@ -735,7 +771,7 @@ class CaucionBot:
             await update.message.reply_text(
                 "⏸️ Notificaciones pausadas.\n\nUsa /configurar para reactivarlas."
             )
-            logger.info(f"Usuario {chat_id} pausó notificaciones")
+            logger.info(f"[CONFIG] user={chat_id} | tipo=pausado")
         else:
             await update.message.reply_text("ℹ️ No tienes notificaciones activas")
 
@@ -759,7 +795,7 @@ class CaucionBot:
             "El bot verifica las tasas cada minuto. Cuando detecta un cambio, "
             "te notifica solo si cumple con tu configuración.\n\n"
             "*Ejemplo:*\n"
-            "Si eliges \"Cambio > 1%\" y la tasa pasa de 35% a 35.4% (+1.14%), "
+            "Si elegis \"Cambio > 1%\" y la tasa pasa de 35% a 35.4% (+1.14%), "
             "recibirás una alerta. Si cambia a 35.2% (+0.57%), no recibirás nada.\n\n"
             "¿Necesitas ayuda? Envía /start para volver al menú principal"
         )
@@ -1000,11 +1036,11 @@ class CaucionBot:
                 "• /ayuda - Volver a ver esta ayuda\n\n"
                 "*Tipos de alertas:*\n\n"
                 "🔔 *Cualquier cambio*\n"
-                "Recibes notificación cada vez que las tasas varíen, sin importar cuánto.\n\n"
+                "Recibis notificaciones cada vez que las tasas varíen, sin importar cuánto.\n\n"
                 "📊 *Cambio porcentual*\n"
                 "Solo te notificamos cuando el cambio supere un porcentaje específico.\n\n"
                 "*Ejemplo:*\n"
-                "Si configuras \"Cambio > 1%\" y la tasa pasa de 35% a 35.5% (+1.4%), recibirás una alerta. "
+                "Si configuras \"Cambio > 1%\" y la tasa pasa de 35% a 35.5% (+1.4%), vas a recibir una alerta. "
                 "Si pasa de 35% a 35.2% (+0.57%), no recibirás nada.\n\n"
                 "💡 Usa /configurar para empezar"
             )
@@ -1033,7 +1069,7 @@ class CaucionBot:
                 "📊 El bot está monitoreando las tasas cada minuto. Te avisaré cuando cambien.",
                 parse_mode='Markdown'
             )
-            logger.info(f"Usuario {chat_id} configuró: cualquier cambio")
+            logger.info(f"[CONFIG] user={chat_id} | tipo=cualquier_cambio")
 
         elif data.startswith("config_") and data != "config_custom":
             # Configurar umbral porcentual
@@ -1050,15 +1086,15 @@ class CaucionBot:
 
             await query.edit_message_text(
                 f"✅ *¡Listo!*\n\n"
-                f"Recibirás alertas cuando las tasas cambien más de {percentage}%\n\n"
+                f"Vas a recibir alertas cuando las tasas cambien más de {percentage}%\n\n"
                 f"🎯 *Próximos pasos:*\n"
                 f"• Usa /tasas para ver las tasas actuales\n"
                 f"• Usa /estado para verificar tu configuración\n"
-                f"• Usa /configurar si quieres cambiar el umbral\n\n"
-                f"📊 El bot está monitoreando las tasas cada minuto. Te avisaré cuando cambien más de {percentage}%",
+                f"• Usa /configurar si queres cambiar el umbral\n\n"
+                f"📊 El bot está monitoreando las tasas cada minuto. Te voy a avisar cuando cambien más de {percentage}%",
                 parse_mode='Markdown'
             )
-            logger.info(f"Usuario {chat_id} configuró: cambio > {percentage}%")
+            logger.info(f"[CONFIG] user={chat_id} | tipo=porcentaje | umbral={percentage}%")
 
         elif data == "config_custom":
             # Configurar umbral personalizado
@@ -1166,7 +1202,7 @@ class CaucionBot:
 
                 await update.message.reply_text(
                     f"✅ *¡Configuración guardada!*\n\n"
-                    f"Recibirás alertas cuando las tasas cambien más de {percentage}%\n\n"
+                    f"Vas a recibir alertas cuando las tasas cambien más de {percentage}%\n\n"
                     f"{tip}\n\n"
                     f"🎯 *Próximos pasos:*\n"
                     f"• /tasas - Ver tasas actuales\n"
@@ -1177,11 +1213,11 @@ class CaucionBot:
                 )
 
                 context.user_data['waiting_custom_threshold'] = False
-                logger.info(f"Usuario {chat_id} configuró umbral personalizado: {percentage}%")
+                logger.info(f"[CONFIG] user={chat_id} | tipo=personalizado | umbral={percentage}%")
 
             except ValueError:
                 await update.message.reply_text(
-                    "❌ Por favor envía solo un número.\n\n"
+                    "❌ Por favor envia solo un número.\n\n"
                     "📝 *Ejemplos válidos:*\n"
                     "• 0.5\n"
                     "• 1.5\n"
@@ -1224,7 +1260,6 @@ class CaucionBot:
         """Verificar tasas periódicamente, guardar en DB y notificar cambios"""
         # No verificar si el mercado está cerrado
         if not self.is_market_open():
-            logger.debug("Mercado cerrado - no se verifican tasas")
             return
 
         if not self.ppi:
@@ -1234,16 +1269,18 @@ class CaucionBot:
         new_rates = self.get_caucion_rates()
 
         if not new_rates:
-            logger.error("No se pudieron obtener las tasas")
+            logger.error("[TASAS] Error obteniendo tasas de PPI")
+            self.stats['api_errors'] += 1
             return
 
         # Guardar tasas en la base de datos
         self.persistence.save_rate_history(new_rates)
+        self.stats['checks'] += 1
 
         # Si es la primera vez, solo guardar las tasas
         if not self.last_rates:
             self.last_rates = new_rates
-            logger.info("Tasas iniciales guardadas en DB")
+            logger.info(f"[TASAS] Iniciales: 1D={new_rates['1d']:.2f}% | 7D={new_rates['7d']:.2f}%")
             return
 
         # Calcular cambios
@@ -1253,9 +1290,20 @@ class CaucionBot:
         has_changes = any(changes[period]['changed'] for period in changes)
 
         if has_changes:
-            logger.info(f"Cambios detectados en las tasas: {changes}")
+            self.stats['changes_detected'] += 1
+
+            # Log detallado de cambios
+            changes_summary = []
+            for period in ['1d', '2d', '3d', '7d']:
+                if changes[period]['changed']:
+                    diff = changes[period]['absolute']
+                    sign = '+' if diff > 0 else ''
+                    changes_summary.append(f"{period.upper()}:{sign}{diff:.2f}%")
+
+            logger.info(f"[TASAS] Cambio detectado: {' | '.join(changes_summary)}")
 
             # Notificar a usuarios según su configuración
+            notified_count = 0
             for chat_id, subscription in list(self.subscriptions.items()):
                 if self.should_notify_user(subscription, changes):
                     try:
@@ -1267,19 +1315,24 @@ class CaucionBot:
                             text=message,
                             parse_mode='Markdown'
                         )
-                        logger.info(f"Notificación enviada a {chat_id}")
+                        notified_count += 1
+                        self.stats['notifications_sent'] += 1
                     except Exception as e:
-                        logger.error(f"Error enviando notificación a {chat_id}: {e}")
-                        # Si el bot fue bloqueado, remover suscripción
+                        logger.warning(f"[NOTIFY] Error enviando a {chat_id}: {e}")
+                        self.stats['notification_errors'] += 1
                         if "bot was blocked" in str(e).lower():
                             del self.subscriptions[chat_id]
+                            logger.info(f"[USERS] Usuario {chat_id} removido (bot bloqueado)")
+
+            if notified_count > 0:
+                logger.info(f"[NOTIFY] {notified_count} notificaciones enviadas")
 
             # Actualizar últimas tasas en memoria
             self.last_rates = new_rates
 
     async def fetch_closing_rates_job(self, context: ContextTypes.DEFAULT_TYPE):
         """Job programado para obtener las tasas al cierre del mercado (17:00)"""
-        logger.info("⏰ Ejecutando consulta de cierre programada (17:00)")
+        logger.info("[JOB] Ejecutando consulta de cierre (17:00)")
 
         if not self.ppi:
             self.connect_ppi()
@@ -1288,8 +1341,30 @@ class CaucionBot:
         if rates:
             self.persistence.save_rate_history(rates)
             self.last_rates = rates
-            logger.info(f"✅ Tasas de cierre guardadas en DB: {rates}")
+            logger.info(f"[JOB] Tasas de cierre: 1D={rates['1d']:.2f}% | 7D={rates['7d']:.2f}%")
 
+    async def log_status_job(self, context: ContextTypes.DEFAULT_TYPE):
+        """Job periódico para loguear el estado del bot"""
+        uptime = datetime.now(ARGENTINA_TZ) - self.start_time
+        hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+        minutes, _ = divmod(remainder, 60)
+
+        market_status = "ABIERTO" if self.is_market_open() else "CERRADO"
+
+        # Resumen de tasas actuales
+        rates_info = "N/A"
+        if self.last_rates:
+            rates_info = f"1D={self.last_rates['1d']:.2f}%"
+
+        logger.info(
+            f"[STATUS] Uptime: {hours}h{minutes}m | "
+            f"Mercado: {market_status} | "
+            f"Subs: {len(self.subscriptions)} | "
+            f"Checks: {self.stats['checks']} | "
+            f"Cambios: {self.stats['changes_detected']} | "
+            f"Notif: {self.stats['notifications_sent']} | "
+            f"Tasa: {rates_info}"
+        )
 
     async def post_init(self, application: Application):
         """Inicialización post-startup"""
@@ -1300,12 +1375,19 @@ class CaucionBot:
 
         # Configurar job para verificar tasas periódicamente
         if application.job_queue:
+            # Job de verificación de tasas (cada 60 segundos)
             application.job_queue.run_repeating(
                 self.check_rates_and_notify,
-                interval=self.check_interval,  # Cada 60 segundos
-                first=10  # Primera ejecución después de 10 segundos
+                interval=self.check_interval,
+                first=10
             )
-            logger.info(f"JobQueue configurado - verificando tasas cada {self.check_interval} segundos")
+
+            # Job de status (cada 15 minutos)
+            application.job_queue.run_repeating(
+                self.log_status_job,
+                interval=900,  # 15 minutos
+                first=60
+            )
 
             # Job diario a las 17:00 para guardar tasas de cierre
             closing_time = dt_time(
@@ -1318,6 +1400,9 @@ class CaucionBot:
                 time=closing_time,
                 days=(0, 1, 2, 3, 4)  # Lunes a viernes
             )
+
+            logger.info("[JOBS] Configurados: tasas(60s), status(15m), cierre(17:00)")
+            logger.info(f"[JOBS] Mercado: {MARKET_OPEN_HOUR}:{MARKET_OPEN_MINUTE:02d} - {MARKET_CLOSE_HOUR}:{MARKET_CLOSE_MINUTE:02d}")
             logger.info(f"📅 Job de cierre programado para las {MARKET_CLOSE_HOUR}:{MARKET_CLOSE_MINUTE:02d}")
         else:
             logger.warning("JobQueue no disponible - las notificaciones automáticas no funcionarán")
