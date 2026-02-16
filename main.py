@@ -988,8 +988,7 @@ class CaucionBot:
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"📢 *Mensaje del administrador:*\n\n{message_text}",
-                    parse_mode='Markdown'
+                    text=f"📢 Mensaje del administrador:\n\n{message_text}"
                 )
                 sent += 1
                 # Pequeña pausa para evitar rate limiting
