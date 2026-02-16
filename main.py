@@ -9,9 +9,9 @@ import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
-from pathlib import Path
 from typing import Dict
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 load_dotenv()
 
@@ -91,67 +91,186 @@ class UserSubscription:
         )
 
 
-class SQLitePersistence:
-    """Maneja persistencia de datos en SQLite"""
+class DatabaseHelper:
+    """Helpers para verificar y gestionar la conexión a PostgreSQL"""
 
-    def __init__(self, db_path: str = "data/bot.db"):
-        self.db_path = db_path
-        Path(db_path).parent.mkdir(exist_ok=True)
+    def __init__(self, db_config: dict):
+        self.db_config = db_config
+
+    def check_connection(self) -> tuple[bool, str]:
+        """
+        Verificar si la conexión a la base de datos es válida.
+        Retorna (success: bool, message: str)
+        """
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            conn.close()
+            return True, "Conexión exitosa"
+        except psycopg2.OperationalError as e:
+            return False, f"Error de conexión: {e}"
+        except Exception as e:
+            return False, f"Error inesperado: {e}"
+
+    def check_tables_exist(self) -> tuple[bool, list[str]]:
+        """
+        Verificar que las tablas requeridas existen.
+        Retorna (all_exist: bool, missing_tables: list)
+        """
+        required_tables = ['subscriptions', 'rate_history', 'suggestions']
+        missing = []
+
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            with conn.cursor() as cur:
+                for table in required_tables:
+                    cur.execute("""
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables
+                            WHERE table_name = %s
+                        )
+                    """, (table,))
+                    exists = cur.fetchone()[0]
+                    if not exists:
+                        missing.append(table)
+            conn.close()
+            return len(missing) == 0, missing
+        except Exception as e:
+            logger.error(f"Error verificando tablas: {e}")
+            return False, required_tables
+
+    def health_check(self) -> dict:
+        """
+        Realizar un health check completo de la base de datos.
+        Retorna un diccionario con el estado.
+        """
+        result = {
+            'healthy': False,
+            'connection': False,
+            'tables': False,
+            'details': {}
+        }
+
+        # Verificar conexión
+        conn_ok, conn_msg = self.check_connection()
+        result['connection'] = conn_ok
+        result['details']['connection'] = conn_msg
+
+        if not conn_ok:
+            return result
+
+        # Verificar tablas
+        tables_ok, missing = self.check_tables_exist()
+        result['tables'] = tables_ok
+        result['details']['tables'] = 'OK' if tables_ok else f"Faltan: {missing}"
+
+        # Health check general
+        result['healthy'] = conn_ok and tables_ok
+
+        return result
+
+    def get_db_stats(self) -> dict:
+        """Obtener estadísticas de la base de datos"""
+        try:
+            conn = psycopg2.connect(**self.db_config)
+            with conn.cursor() as cur:
+                stats = {}
+
+                # Contar registros en cada tabla
+                for table in ['subscriptions', 'rate_history', 'suggestions']:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    stats[f'{table}_count'] = cur.fetchone()[0]
+
+                # Tamaño de la base de datos
+                cur.execute("""
+                    SELECT pg_size_pretty(pg_database_size(current_database()))
+                """)
+                stats['db_size'] = cur.fetchone()[0]
+
+            conn.close()
+            return stats
+        except Exception as e:
+            logger.error(f"Error obteniendo stats de DB: {e}")
+            return {}
+
+
+class PostgreSQLPersistence:
+    """Maneja persistencia de datos en PostgreSQL"""
+
+    def __init__(self):
+        # Verificar que las variables de entorno estén configuradas
+        required_vars = ['DB_HOST', 'DB_USER', 'DB_PASS', 'DB_NAME']
+        missing = [var for var in required_vars if not getenv(var)]
+        if missing:
+            raise EnvironmentError(f"Variables de entorno faltantes: {', '.join(missing)}")
+
+        self.db_config = {
+            'host': getenv('DB_HOST'),
+            'port': int(getenv('DB_PORT', '5432')),
+            'user': getenv('DB_USER'),
+            'password': getenv('DB_PASS'),
+            'dbname': getenv('DB_NAME')
+        }
 
         # Lock para operaciones async
         self.write_lock = asyncio.Lock()
 
+        # Helper para verificaciones
+        self.helper = DatabaseHelper(self.db_config)
+
+        # Conexión persistente (None hasta que se use)
+        self._conn = None
+
+        # Verificar conexión antes de inicializar
+        self._verify_connection()
+
         # Inicializar base de datos
         self.init_db()
 
+    def _verify_connection(self):
+        """Verificar que la conexión es válida antes de continuar"""
+        ok, msg = self.helper.check_connection()
+        if not ok:
+            logger.error(f"❌ No se pudo conectar a PostgreSQL: {msg}")
+            raise ConnectionError(f"No se pudo conectar a la base de datos: {msg}")
+        logger.info(f"✅ Conexión a PostgreSQL verificada: {self.db_config['host']}")
+
+    def _get_connection(self):
+        """Obtener una conexión a la base de datos"""
+        try:
+            return psycopg2.connect(**self.db_config)
+        except psycopg2.OperationalError as e:
+            logger.error(f"Error obteniendo conexión: {e}")
+            raise
+
+    def close(self):
+        """Cerrar conexiones abiertas"""
+        if self._conn is not None:
+            try:
+                self._conn.close()
+                self._conn = None
+                logger.info("🔒 Conexión a PostgreSQL cerrada")
+            except Exception as e:
+                logger.error(f"Error cerrando conexión: {e}")
+
     def init_db(self):
         """Crear tablas si no existen"""
-        with sqlite3.connect(self.db_path) as conn:
-            # Tabla de suscripciones
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS subscriptions (
-                    chat_id INTEGER PRIMARY KEY,
-                    subscription_type TEXT NOT NULL,
-                    threshold_percentage REAL NOT NULL DEFAULT 0.0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                # Tabla de suscripciones
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS subscriptions (
+                        chat_id BIGINT PRIMARY KEY,
+                        subscription_type TEXT NOT NULL,
+                        threshold_percentage REAL NOT NULL DEFAULT 0.0,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
 
-            # Verificar si existe la tabla rate_history con estructura vieja
-            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='rate_history'")
-            table_exists = cursor.fetchone() is not None
-
-            if table_exists:
-                # Verificar si tiene la estructura vieja (rate_24h)
-                cursor = conn.execute("PRAGMA table_info(rate_history)")
-                columns = [row[1] for row in cursor.fetchall()]
-
-                if 'rate_24h' in columns and 'rate_1d' not in columns:
-                    logger.info("🔄 Migrando tabla rate_history a nueva estructura...")
-                    # Migrar: crear tabla nueva, copiar datos, eliminar vieja, renombrar
-                    conn.execute("""
-                        CREATE TABLE rate_history_new (
-                            id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            rate_1d REAL NOT NULL,
-                            rate_2d REAL NOT NULL,
-                            rate_3d REAL NOT NULL,
-                            rate_7d REAL NOT NULL DEFAULT 0,
-                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        )
-                    """)
-                    conn.execute("""
-                        INSERT INTO rate_history_new (id, rate_1d, rate_2d, rate_3d, rate_7d, timestamp)
-                        SELECT id, rate_24h, rate_48h, rate_72h, 0, timestamp FROM rate_history
-                    """)
-                    conn.execute("DROP TABLE rate_history")
-                    conn.execute("ALTER TABLE rate_history_new RENAME TO rate_history")
-                    logger.info("✅ Migración completada")
-            else:
-                # Crear tabla nueva
-                conn.execute("""
-                    CREATE TABLE rate_history (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                # Tabla de historial de tasas
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS rate_history (
+                        id SERIAL PRIMARY KEY,
                         rate_1d REAL NOT NULL,
                         rate_2d REAL NOT NULL,
                         rate_3d REAL NOT NULL,
@@ -160,157 +279,167 @@ class SQLitePersistence:
                     )
                 """)
 
-            # Índice para búsquedas rápidas por fecha
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_rate_history_timestamp
-                ON rate_history(timestamp DESC)
-            """)
+                # Índice para búsquedas rápidas por fecha
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_rate_history_timestamp
+                    ON rate_history(timestamp DESC)
+                """)
 
-            # Tabla de sugerencias
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS suggestions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    chat_id INTEGER NOT NULL,
-                    username TEXT,
-                    message TEXT NOT NULL,
-                    read INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+                # Tabla de sugerencias
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS suggestions (
+                        id SERIAL PRIMARY KEY,
+                        chat_id BIGINT NOT NULL,
+                        username TEXT,
+                        message TEXT NOT NULL,
+                        read BOOLEAN DEFAULT FALSE,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
 
-            conn.commit()
+                conn.commit()
 
-        logger.info("✅ Base de datos SQLite inicializada")
+        logger.info("✅ Base de datos PostgreSQL inicializada")
 
     def load_subscriptions(self) -> Dict[int, UserSubscription]:
         """Cargar todas las suscripciones desde la base de datos"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                                  SELECT chat_id, subscription_type, threshold_percentage
-                                  FROM subscriptions
-                                  ORDER BY created_at DESC
-                                  """)
+        with self._get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT chat_id, subscription_type, threshold_percentage
+                    FROM subscriptions
+                    ORDER BY created_at DESC
+                """)
 
-            subscriptions = {}
-            for row in cursor:
-                subscriptions[row['chat_id']] = UserSubscription(
-                    chat_id=row['chat_id'],
-                    subscription_type=SubscriptionType(row['subscription_type']),
-                    threshold_percentage=row['threshold_percentage']
-                )
+                subscriptions = {}
+                for row in cur.fetchall():
+                    subscriptions[row['chat_id']] = UserSubscription(
+                        chat_id=row['chat_id'],
+                        subscription_type=SubscriptionType(row['subscription_type']),
+                        threshold_percentage=row['threshold_percentage']
+                    )
 
-            logger.info(f"✅ Cargadas {len(subscriptions)} suscripciones desde SQLite")
-            return subscriptions
+                logger.info(f"✅ Cargadas {len(subscriptions)} suscripciones desde PostgreSQL")
+                return subscriptions
 
     async def save_subscription(self, subscription: UserSubscription):
         """Guardar o actualizar una suscripción (async)"""
         async with self.write_lock:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("""
-                    INSERT OR REPLACE INTO subscriptions 
-                    (chat_id, subscription_type, threshold_percentage, updated_at)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                """, (
-                    subscription.chat_id,
-                    subscription.subscription_type.value,
-                    subscription.threshold_percentage
-                ))
-                conn.commit()
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO subscriptions
+                        (chat_id, subscription_type, threshold_percentage, updated_at)
+                        VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                        ON CONFLICT (chat_id) DO UPDATE SET
+                            subscription_type = EXCLUDED.subscription_type,
+                            threshold_percentage = EXCLUDED.threshold_percentage,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (
+                        subscription.chat_id,
+                        subscription.subscription_type.value,
+                        subscription.threshold_percentage
+                    ))
+                    conn.commit()
 
             logger.debug(f"💾 Suscripción guardada: chat_id={subscription.chat_id}")
 
     async def delete_subscription(self, chat_id: int):
         """Eliminar una suscripción (async)"""
         async with self.write_lock:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("DELETE FROM subscriptions WHERE chat_id = ?", (chat_id,))
-                conn.commit()
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM subscriptions WHERE chat_id = %s", (chat_id,))
+                    conn.commit()
 
             logger.info(f"🗑️ Suscripción eliminada: chat_id={chat_id}")
 
     def save_rate_history(self, rates: dict):
         """Guardar tasas en la base de datos"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                INSERT INTO rate_history (rate_1d, rate_2d, rate_3d, rate_7d, timestamp)
-                VALUES (?, ?, ?, ?, ?)
-            """, (rates['1d'], rates['2d'], rates['3d'], rates['7d'], rates['timestamp']))
-            conn.commit()
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO rate_history (rate_1d, rate_2d, rate_3d, rate_7d, timestamp)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (rates['1d'], rates['2d'], rates['3d'], rates['7d'], rates['timestamp']))
+                conn.commit()
         logger.debug(f"💾 Tasas guardadas en DB: {rates}")
 
     def get_latest_rates(self) -> dict | None:
         """Obtener las últimas tasas guardadas en la base de datos"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("""
-                SELECT rate_1d, rate_2d, rate_3d, rate_7d, timestamp
-                FROM rate_history
-                ORDER BY id DESC
-                LIMIT 1
-            """)
-            row = cursor.fetchone()
+        with self._get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT rate_1d, rate_2d, rate_3d, rate_7d, timestamp
+                    FROM rate_history
+                    ORDER BY id DESC
+                    LIMIT 1
+                """)
+                row = cur.fetchone()
 
-            if row:
-                return {
-                    '1d': row['rate_1d'],
-                    '2d': row['rate_2d'],
-                    '3d': row['rate_3d'],
-                    '7d': row['rate_7d'],
-                    'timestamp': row['timestamp']
-                }
-            return None
+                if row:
+                    return {
+                        '1d': row['rate_1d'],
+                        '2d': row['rate_2d'],
+                        '3d': row['rate_3d'],
+                        '7d': row['rate_7d'],
+                        'timestamp': row['timestamp']
+                    }
+                return None
 
     async def save_suggestion(self, chat_id: int, username: str, message: str):
         """Guardar una sugerencia en la base de datos"""
         async with self.write_lock:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("""
-                    INSERT INTO suggestions (chat_id, username, message)
-                    VALUES (?, ?, ?)
-                """, (chat_id, username, message))
-                conn.commit()
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO suggestions (chat_id, username, message)
+                        VALUES (%s, %s, %s)
+                    """, (chat_id, username, message))
+                    conn.commit()
         logger.info(f"💬 Sugerencia guardada de chat_id={chat_id}")
 
     def get_suggestions(self, unread_only: bool = False) -> list:
         """Obtener sugerencias de la base de datos"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            query = "SELECT * FROM suggestions"
-            if unread_only:
-                query += " WHERE read = 0"
-            query += " ORDER BY created_at DESC LIMIT 20"
-            cursor = conn.execute(query)
-            return [dict(row) for row in cursor.fetchall()]
+        with self._get_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                query = "SELECT * FROM suggestions"
+                if unread_only:
+                    query += " WHERE read = FALSE"
+                query += " ORDER BY created_at DESC LIMIT 20"
+                cur.execute(query)
+                return [dict(row) for row in cur.fetchall()]
 
     def mark_suggestion_read(self, suggestion_id: int):
         """Marcar una sugerencia como leída"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("UPDATE suggestions SET read = 1 WHERE id = ?", (suggestion_id,))
-            conn.commit()
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE suggestions SET read = TRUE WHERE id = %s", (suggestion_id,))
+                conn.commit()
 
     def get_stats(self) -> dict:
         """Obtener estadísticas del bot"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("""
-                                  SELECT COUNT(*)                                                                      as total_users,
-                                         SUM(CASE WHEN subscription_type = 'any_change' THEN 1 ELSE 0 END)             as any_change_users,
-                                         SUM(CASE WHEN subscription_type = 'percentage' THEN 1 ELSE 0 END)             as percentage_users,
-                                         AVG(CASE WHEN subscription_type = 'percentage' THEN threshold_percentage END) as avg_threshold
-                                  FROM subscriptions
-                                  """)
+        with self._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(*) as total_users,
+                           SUM(CASE WHEN subscription_type = 'any_change' THEN 1 ELSE 0 END) as any_change_users,
+                           SUM(CASE WHEN subscription_type = 'percentage' THEN 1 ELSE 0 END) as percentage_users,
+                           AVG(CASE WHEN subscription_type = 'percentage' THEN threshold_percentage END) as avg_threshold
+                    FROM subscriptions
+                """)
 
-            row = cursor.fetchone()
-            return {
-                'total_users': row[0] or 0,
-                'any_change_users': row[1] or 0,
-                'percentage_users': row[2] or 0,
-                'avg_threshold': round(row[3] or 0, 2)
-            }
+                row = cur.fetchone()
+                return {
+                    'total_users': row[0] or 0,
+                    'any_change_users': row[1] or 0,
+                    'percentage_users': row[2] or 0,
+                    'avg_threshold': round(row[3] or 0, 2) if row[3] else 0
+                }
 
 
 class CaucionBot:
-    def __init__(self, telegram_token: str, ppi_env: Environment, db_path: str = "data/bot.db"):
+    def __init__(self, telegram_token: str, ppi_env: Environment):
         self.telegram_token = telegram_token
         self.ppi_config = PPIConfig.from_environment(ppi_env)
         self.ppi_env = ppi_env
@@ -318,10 +447,9 @@ class CaucionBot:
         self.subscriptions = {}  # {chat_id: UserSubscription}
         self.last_rates = None  # Últimas tasas obtenidas (en memoria para comparar)
         self.check_interval = 60  # Verificar cada 60 segundos
-        self.db_path = db_path
 
-        # Sistema de persistencia SQLite
-        self.persistence = SQLitePersistence(db_path=db_path)
+        # Sistema de persistencia PostgreSQL
+        self.persistence = PostgreSQLPersistence()
 
         # Cargar suscripciones guardadas
         self.subscriptions = self.persistence.load_subscriptions()
@@ -692,13 +820,10 @@ class CaucionBot:
 
         try:
             stats = self.persistence.get_stats()
+            db_stats = self.persistence.helper.get_db_stats()
+            health = self.persistence.helper.health_check()
 
-            # Calcular tamaño de la base de datos
-            import os
-            db_size = 0
-            db_path = Path("data/bot.db")
-            if db_path.exists():
-                db_size = os.path.getsize(db_path) / (1024 * 1024)  # MB
+            health_icon = "✅" if health['healthy'] else "❌"
 
             message = f"""
 📊 *Estadísticas del Bot*
@@ -708,11 +833,12 @@ class CaucionBot:
 📊 Con umbral: {stats['percentage_users']}
 📈 Umbral promedio: {stats['avg_threshold']}%
 
-💾 Tamaño DB: {db_size:.2f} MB  
-🗄️ Base de datos: SQLite
-🚂 Desplegado en: home-server
+🗄️ *Base de datos:* PostgreSQL
+{health_icon} Estado: {'Saludable' if health['healthy'] else 'Con problemas'}
+💾 Tamaño: {db_stats.get('db_size', 'N/A')}
+📝 Registros tasas: {db_stats.get('rate_history_count', 'N/A')}
 
-_Usa /export para descargar backup de la DB_
+🚂 Desplegado en: home-server
             """
 
             await update.message.reply_text(message, parse_mode='Markdown')
@@ -721,8 +847,8 @@ _Usa /export para descargar backup de la DB_
             logger.error(f"Error en /stats: {e}")
             await update.message.reply_text(f"❌ Error obteniendo estadísticas: {str(e)}")
 
-    async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando /export - Exportar base de datos (solo admin)"""
+    async def dbstatus_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /dbstatus - Verificar estado de la base de datos (solo admin)"""
         ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
 
         if ADMIN_CHAT_ID == 0:
@@ -732,34 +858,35 @@ _Usa /export para descargar backup de la DB_
             return
 
         try:
-            await update.message.reply_text("📦 Creando backup...")
+            health = self.persistence.helper.health_check()
 
-            # Crear backup
-            import shutil
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_file = Path(f"backup_{timestamp}.db")
+            conn_icon = "✅" if health['connection'] else "❌"
+            tables_icon = "✅" if health['tables'] else "❌"
+            health_icon = "✅" if health['healthy'] else "❌"
 
-            shutil.copy2("data/bot.db", backup_file)
+            message = f"""
+🔍 *Estado de la Base de Datos*
 
-            # Enviar archivo
-            with open(backup_file, 'rb') as f:
-                await update.message.reply_document(
-                    document=f,
-                    filename=f"caucion_bot_backup_{timestamp}.db",
-                    caption=f"📦 Backup de la base de datos\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
+{health_icon} *Estado general:* {'Saludable' if health['healthy'] else 'Con problemas'}
 
-            # Limpiar archivo temporal
-            backup_file.unlink()
+*Detalles:*
+{conn_icon} Conexión: {health['details'].get('connection', 'N/A')}
+{tables_icon} Tablas: {health['details'].get('tables', 'N/A')}
 
-            logger.info(f"Backup exportado a usuario {update.effective_chat.id}")
+*Configuración:*
+🖥️ Host: `{self.persistence.db_config['host']}`
+🔌 Puerto: `{self.persistence.db_config['port']}`
+📦 DB: `{self.persistence.db_config['dbname']}`
+            """
+
+            await update.message.reply_text(message, parse_mode='Markdown')
 
         except Exception as e:
-            logger.error(f"Error en /export: {e}")
-            await update.message.reply_text(f"❌ Error creando backup: {str(e)}")
+            logger.error(f"Error en /dbstatus: {e}")
+            await update.message.reply_text(f"❌ Error verificando DB: {str(e)}")
 
-    async def restore_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando /restore - Restaurar base de datos desde archivo (solo admin)"""
+    async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /export - No disponible con PostgreSQL"""
         ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
 
         if ADMIN_CHAT_ID == 0:
@@ -769,49 +896,32 @@ _Usa /export para descargar backup de la DB_
             return
 
         await update.message.reply_text(
-            "📥 *Restaurar base de datos*\n\n"
-            "Enviame el archivo `.db` como documento para restaurar la base de datos.\n\n"
-            "⚠️ *Atención:* Esto reemplazará la base de datos actual.",
+            "ℹ️ *Comando no disponible*\n\n"
+            "Los backups de PostgreSQL se gestionan directamente en el servidor.\n"
+            "Usa `pg_dump` para crear backups.",
             parse_mode='Markdown'
         )
-        context.user_data['awaiting_restore'] = True
 
-    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Manejar documentos recibidos para restore"""
+    async def restore_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /restore - No disponible con PostgreSQL"""
         ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
 
-        if update.effective_chat.id != ADMIN_CHAT_ID:
+        if ADMIN_CHAT_ID == 0:
+            pass
+        elif update.effective_chat.id != ADMIN_CHAT_ID:
+            await update.message.reply_text("⛔ Solo el administrador puede usar este comando")
             return
 
-        if not context.user_data.get('awaiting_restore'):
-            return
+        await update.message.reply_text(
+            "ℹ️ *Comando no disponible*\n\n"
+            "La restauración de PostgreSQL se gestiona directamente en el servidor.\n"
+            "Usa `pg_restore` o `psql` para restaurar backups.",
+            parse_mode='Markdown'
+        )
 
-        document = update.message.document
-        if not document.file_name.endswith('.db'):
-            await update.message.reply_text("❌ El archivo debe ser un `.db`")
-            return
-
-        try:
-            await update.message.reply_text("⏳ Descargando y restaurando...")
-
-            file = await context.bot.get_file(document.file_id)
-            await file.download_to_drive("data/bot.db")
-
-            context.user_data['awaiting_restore'] = False
-
-            # Reinicializar la base de datos
-            self.persistence = SQLitePersistence()
-
-            await update.message.reply_text(
-                "✅ *Base de datos restaurada exitosamente*\n\n"
-                "La base de datos ha sido reemplazada con el archivo recibido.",
-                parse_mode='Markdown'
-            )
-            logger.info(f"Base de datos restaurada por usuario {update.effective_chat.id}")
-
-        except Exception as e:
-            logger.error(f"Error en restore: {e}")
-            await update.message.reply_text(f"❌ Error restaurando: {str(e)}")
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Manejar documentos recibidos - actualmente no utilizado con PostgreSQL"""
+        pass
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manejar callbacks de botones inline"""
@@ -1180,33 +1290,6 @@ _Usa /export para descargar backup de la DB_
             self.last_rates = rates
             logger.info(f"✅ Tasas de cierre guardadas en DB: {rates}")
 
-    async def backup_db_to_telegram(self, context: ContextTypes.DEFAULT_TYPE):
-        """Job diario: enviar copia de la base de datos al admin por Telegram"""
-        import shutil
-
-        ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
-        if ADMIN_CHAT_ID == 0:
-            logger.warning("Backup no enviado: ADMIN_CHAT_ID no configurado")
-            return
-
-        try:
-            timestamp = datetime.now(ARGENTINA_TZ).strftime("%Y%m%d_%H%M%S")
-            backup_file = Path(f"caucion_bot_backup_{timestamp}.db")
-            shutil.copy2(self.persistence.db_path, backup_file)
-
-            with open(backup_file, 'rb') as f:
-                await context.bot.send_document(
-                    chat_id=ADMIN_CHAT_ID,
-                    document=f,
-                    filename=backup_file.name,
-                    caption=f"📦 Backup automático diario\n🕐 {datetime.now(ARGENTINA_TZ).strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-
-            backup_file.unlink()
-            logger.info("✅ Backup diario enviado por Telegram")
-
-        except Exception as e:
-            logger.error(f"❌ Error en backup diario: {e}")
 
     async def post_init(self, application: Application):
         """Inicialización post-startup"""
@@ -1236,21 +1319,25 @@ _Usa /export para descargar backup de la DB_
                 days=(0, 1, 2, 3, 4)  # Lunes a viernes
             )
             logger.info(f"📅 Job de cierre programado para las {MARKET_CLOSE_HOUR}:{MARKET_CLOSE_MINUTE:02d}")
-
-            # Job diario de backup a las 23:00
-            backup_time = dt_time(hour=23, minute=0, tzinfo=ARGENTINA_TZ)
-            application.job_queue.run_daily(
-                self.backup_db_to_telegram,
-                time=backup_time
-            )
-            logger.info("📅 Job de backup diario programado para las 23:00")
         else:
             logger.warning("JobQueue no disponible - las notificaciones automáticas no funcionarán")
 
+    async def post_shutdown(self, application: Application):
+        """Cleanup al cerrar el bot"""
+        logger.info("🛑 Cerrando bot...")
+        self.persistence.close()
+        logger.info("✅ Bot cerrado correctamente")
+
     def run(self):
         """Ejecutar el bot"""
-        # Crear aplicación
-        application = Application.builder().token(self.telegram_token).post_init(self.post_init).build()
+        # Crear aplicación con post_init y post_shutdown
+        application = (
+            Application.builder()
+            .token(self.telegram_token)
+            .post_init(self.post_init)
+            .post_shutdown(self.post_shutdown)
+            .build()
+        )
 
         # Agregar handlers de comandos
         application.add_handler(CommandHandler("start", self.start_command))
@@ -1260,6 +1347,7 @@ _Usa /export para descargar backup de la DB_
         application.add_handler(CommandHandler("pausar", self.pausar_command))
         application.add_handler(CommandHandler("ayuda", self.ayuda_command))
         application.add_handler(CommandHandler("stats", self.stats_command))
+        application.add_handler(CommandHandler("dbstatus", self.dbstatus_command))
         application.add_handler(CommandHandler("export", self.export_command))
         application.add_handler(CommandHandler("sugerencia", self.sugerencia_command))
         application.add_handler(CommandHandler("sugerencias", self.sugerencias_command))
@@ -1287,9 +1375,6 @@ _Usa /export para descargar backup de la DB_
 
 
 def main():
-    # Asegurar que existe directorio de datos
-    Path("data").mkdir(exist_ok=True)
-
     # Detectar ambiente (dev o production)
     bot_env = getenv("BOT_ENV", "production").lower()
     is_dev = bot_env in ("dev", "development", "sandbox")
@@ -1298,12 +1383,10 @@ def main():
         logger.info("🔧 Ejecutando en modo DESARROLLO")
         telegram_token = getenv("TELEGRAM_BOT_TOKEN_DEV") or getenv("TELEGRAM_BOT_TOKEN")
         ppi_env = Environment.PRODUCTION
-        db_path = "data/bot_dev.db"
     else:
         logger.info("🚀 Ejecutando en modo PRODUCCIÓN")
         telegram_token = getenv("TELEGRAM_BOT_TOKEN")
         ppi_env = Environment.PRODUCTION
-        db_path = "data/bot.db"
 
     if not telegram_token:
         logger.error("TELEGRAM_BOT_TOKEN no configurado en .env")
@@ -1312,8 +1395,7 @@ def main():
     # Crear y ejecutar bot
     bot = CaucionBot(
         telegram_token=telegram_token,
-        ppi_env=ppi_env,
-        db_path=db_path
+        ppi_env=ppi_env
     )
     bot.run()
 

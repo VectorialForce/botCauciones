@@ -2,3 +2,4 @@ python-telegram-bot[job-queue]>=20.0
 python-dotenv>=1.0.0
 ppi-client
 tzdata
+psycopg2-binary>=2.9.0

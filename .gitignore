@@ -9,3 +9,6 @@ __pycache__/
 venv/
 .idea/
 *.sh
+chrome_profile/
+.pytest_cache/
+.claude
