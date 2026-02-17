@@ -30,6 +30,11 @@ class TwitterBot:
         """Inicializar ChromeDriver con stealth"""
         options = webdriver.ChromeOptions()
 
+        # Usar Chromium si está disponible (Docker ARM64), sino Chrome local
+        chromium_path = Path("/usr/bin/chromium")
+        if chromium_path.exists():
+            options.binary_location = str(chromium_path)
+
         # Usar profile con sesión de Twitter pre-logueada
         profile_abs = str(Path(self.chrome_profile_path).resolve())
         options.add_argument(f"--user-data-dir={profile_abs}")
