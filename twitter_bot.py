@@ -3,6 +3,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
 from selenium_stealth import stealth
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -31,9 +32,13 @@ class TwitterBot:
         options = webdriver.ChromeOptions()
 
         # Usar Chromium si está disponible (Docker ARM64), sino Chrome local
+        service = None
         chromium_path = Path("/usr/bin/chromium")
+        chromedriver_path = Path("/usr/bin/chromedriver")
         if chromium_path.exists():
             options.binary_location = str(chromium_path)
+        if chromedriver_path.exists():
+            service = Service(str(chromedriver_path))
 
         # Usar profile con sesión de Twitter pre-logueada
         profile_abs = str(Path(self.chrome_profile_path).resolve())
@@ -45,7 +50,7 @@ class TwitterBot:
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
 
-        self.driver = webdriver.Chrome(options=options)
+        self.driver = webdriver.Chrome(options=options, service=service) if service else webdriver.Chrome(options=options)
 
         stealth(
             self.driver,
