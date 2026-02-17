@@ -12,6 +12,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQuer
 from typing import Dict
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from twitter_bot import TwitterBot
 
 load_dotenv()
 
@@ -478,6 +479,13 @@ class CaucionBot:
 
         # Cargar últimas tasas de la DB para tener referencia
         self.last_rates = self.persistence.get_latest_rates()
+
+        # Integración Twitter (Selenium)
+        self.twitter_enabled = getenv("TWITTER_ENABLED", "false").lower() == "true"
+        self.twitter_bot = None
+        if self.twitter_enabled:
+            self.twitter_bot = TwitterBot()
+            logger.info("[INIT] Integración Twitter habilitada")
 
         logger.info("=" * 50)
         logger.info("[INIT] Bot CauchoCauciones inicializado")
@@ -1361,6 +1369,14 @@ class CaucionBot:
                     changes_summary.append(f"{period.upper()}:{sign}{diff:.2f}%")
 
             logger.info(f"[TASAS] Cambio detectado: {' | '.join(changes_summary)}")
+
+            # Publicar en Twitter si corresponde
+            if self.twitter_bot and self.twitter_bot.should_tweet(changes):
+                try:
+                    tweet_text = self.twitter_bot.format_tweet(new_rates, changes)
+                    self.twitter_bot.tweet(tweet_text)
+                except Exception as e:
+                    logger.error(f"[TWITTER] Error en publicación: {e}")
 
             # Notificar a usuarios según su configuración
             notified_count = 0

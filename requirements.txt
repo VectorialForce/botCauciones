@@ -3,3 +3,5 @@ python-dotenv>=1.0.0
 ppi-client
 tzdata
 psycopg2-binary>=2.9.0
+selenium>=4.0.0
+selenium-stealth>=1.0.6
