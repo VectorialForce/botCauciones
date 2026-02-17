@@ -111,10 +111,18 @@ class TwitterBot:
                 EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="tweetTextarea_0"]'))
             )
 
+            # Esperar a que el overlay/mask desaparezca
+            try:
+                WebDriverWait(self.driver, 5).until(
+                    EC.invisibility_of_element_located((By.CSS_SELECTOR, '[data-testid="mask"]'))
+                )
+            except Exception:
+                pass
+
             time.sleep(2)
 
-            # Hacer click en el cuadro de texto para activarlo
-            text_box.click()
+            # Click via JS para evitar intercepción por overlays
+            self.driver.execute_script("arguments[0].click();", text_box)
             time.sleep(1)
 
             # Insertar texto simulando un paste (send_keys no soporta emojis)
