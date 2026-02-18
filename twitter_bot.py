@@ -1,6 +1,5 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
@@ -99,27 +98,19 @@ class TwitterBot:
     def tweet(self, text: str) -> bool:
         """Publicar un tweet usando Selenium"""
         try:
-            if not self.driver:
-                self._init_driver()
+            self._init_driver()
 
             logger.info("[TWITTER] Navegando a X/Twitter...")
             self.driver.get("https://x.com/compose/post")
 
-            # Esperar a que cargue el cuadro de texto
             wait = WebDriverWait(self.driver, 20)
+
+            # Esperar a que cargue el cuadro de texto
             text_box = wait.until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="tweetTextarea_0"]'))
             )
 
-            # Esperar a que el overlay/mask desaparezca
-            try:
-                WebDriverWait(self.driver, 5).until(
-                    EC.invisibility_of_element_located((By.CSS_SELECTOR, '[data-testid="mask"]'))
-                )
-            except Exception:
-                pass
-
-            time.sleep(2)
+            time.sleep(3)
 
             # Click via JS para evitar intercepción por overlays
             self.driver.execute_script("arguments[0].click();", text_box)
@@ -127,7 +118,7 @@ class TwitterBot:
 
             # Insertar texto simulando un paste (send_keys no soporta emojis)
             self.driver.execute_script("""
-                const editor = document.activeElement;
+                const el = arguments[1];
                 const dt = new DataTransfer();
                 dt.setData('text/plain', arguments[0]);
                 const paste = new ClipboardEvent('paste', {
@@ -135,16 +126,16 @@ class TwitterBot:
                     bubbles: true,
                     cancelable: true
                 });
-                editor.dispatchEvent(paste);
-            """, text)
+                el.dispatchEvent(paste);
+            """, text, text_box)
 
-            time.sleep(1)
+            time.sleep(2)
 
-            # Clickear el botón de publicar
+            # Clickear el botón de publicar via JS para evitar intercepción
             post_button = wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, '[data-testid="tweetButton"]'))
+                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-testid="tweetButton"]'))
             )
-            post_button.click()
+            self.driver.execute_script("arguments[0].click();", post_button)
 
             logger.info("[TWITTER] Tweet publicado exitosamente")
 
@@ -154,6 +145,8 @@ class TwitterBot:
         except Exception as e:
             logger.error(f"[TWITTER] Error publicando tweet: {e}")
             return False
+        finally:
+            self.close()
 
     def close(self):
         """Cerrar el driver"""
