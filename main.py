@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 from typing import Dict
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -1477,13 +1477,6 @@ class CaucionBot:
 
         # Agregar handler para botones inline
         application.add_handler(CallbackQueryHandler(self.button_callback))
-
-        # Agregar handler para documentos (restore)
-        from telegram.ext import MessageHandler, filters
-        application.add_handler(MessageHandler(
-            filters.Document.ALL,
-            self.handle_document
-        ))
 
         # Agregar handler para mensajes de texto
         application.add_handler(MessageHandler(
