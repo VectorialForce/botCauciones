@@ -603,7 +603,7 @@ class CaucionBot:
                 change = changes[period]
                 arrow = "📈" if change['absolute'] > 0 else "📉"
                 sign = "+" if change['absolute'] > 0 else ""
-                message += f" {arrow} {sign}{change['absolute']:.2f}% ({sign}{change['percentage']:.2f}%)"
+                message += f" {arrow} {sign}{change['absolute']:.2f}%"
 
             message += "\n"
 
@@ -929,40 +929,6 @@ class CaucionBot:
             logger.error(f"Error en /dbstatus: {e}")
             await update.message.reply_text(f"❌ Error verificando DB: {str(e)}")
 
-    async def export_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando /export - No disponible con PostgreSQL"""
-        ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
-
-        if ADMIN_CHAT_ID == 0:
-            pass
-        elif update.effective_chat.id != ADMIN_CHAT_ID:
-            await update.message.reply_text("⛔ Solo el administrador puede usar este comando")
-            return
-
-        await update.message.reply_text(
-            "ℹ️ *Comando no disponible*\n\n"
-            "Los backups de PostgreSQL se gestionan directamente en el servidor.\n"
-            "Usa `pg_dump` para crear backups.",
-            parse_mode='Markdown'
-        )
-
-    async def restore_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando /restore - No disponible con PostgreSQL"""
-        ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
-
-        if ADMIN_CHAT_ID == 0:
-            pass
-        elif update.effective_chat.id != ADMIN_CHAT_ID:
-            await update.message.reply_text("⛔ Solo el administrador puede usar este comando")
-            return
-
-        await update.message.reply_text(
-            "ℹ️ *Comando no disponible*\n\n"
-            "La restauración de PostgreSQL se gestiona directamente en el servidor.\n"
-            "Usa `pg_restore` o `psql` para restaurar backups.",
-            parse_mode='Markdown'
-        )
-
     async def broadcast_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Comando /broadcast - Enviar mensaje a todos los suscriptores (solo admin)"""
         ADMIN_CHAT_ID = int(getenv("ADMIN_CHAT_ID", "0"))
@@ -1022,10 +988,6 @@ class CaucionBot:
             f"🚫 Bloqueados (removidos): {len(blocked)}",
             parse_mode='Markdown'
         )
-
-    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Manejar documentos recibidos - actualmente no utilizado con PostgreSQL"""
-        pass
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Manejar callbacks de botones inline"""
@@ -1509,10 +1471,8 @@ class CaucionBot:
         application.add_handler(CommandHandler("ayuda", self.ayuda_command))
         application.add_handler(CommandHandler("stats", self.stats_command))
         application.add_handler(CommandHandler("dbstatus", self.dbstatus_command))
-        application.add_handler(CommandHandler("export", self.export_command))
         application.add_handler(CommandHandler("sugerencia", self.sugerencia_command))
         application.add_handler(CommandHandler("sugerencias", self.sugerencias_command))
-        application.add_handler(CommandHandler("restore", self.restore_command))
         application.add_handler(CommandHandler("broadcast", self.broadcast_command))
 
         # Agregar handler para botones inline

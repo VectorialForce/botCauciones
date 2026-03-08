@@ -87,7 +87,7 @@ class TwitterBot:
                 change = changes[period]
                 arrow = "📈" if change['absolute'] > 0 else "📉"
                 sign = "+" if change['absolute'] > 0 else ""
-                message += f" {arrow} {sign}{change['absolute']:.2f}% ({sign}{change['percentage']:.2f}%)"
+                message += f" {arrow} {sign}{change['absolute']:.2f}%"
 
             message += "\n"
 
